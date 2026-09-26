@@ -268,31 +268,47 @@ Investigate a simulated intrusion into Asteron Utilities' U.S. environment.
 
 This is shown when the participant opens the event details.
 
-### 5. Image
+### 5. Event image
 
-Place event images under:
+The admin page includes an image uploader. Enter the CTF ID first, then choose an image.
 
-```text
-appserver/static/images/
-```
-
-Example:
+Supported uploads:
 
 ```text
-appserver/static/images/asteron-easy.png
+PNG
+JPEG
+WebP
 ```
 
-Use this value in the event:
+Maximum upload size:
 
 ```text
-/static/app/SA-ctf_registration/images/asteron-easy.png
+5 MB
 ```
 
-If no custom image is supplied, use:
+Uploaded images are stored under:
 
 ```text
-/static/app/SA-ctf_registration/images/default-ctf.svg
+appserver/static/images/uploads/
 ```
+
+using the CTF ID as the filename. For example:
+
+```text
+appserver/static/images/uploads/asteron-easy-2026.png
+```
+
+The app automatically sets the event image URL:
+
+```text
+/static/app/SA-ctf_registration/images/uploads/asteron-easy-2026.png
+```
+
+Uploading a new image for the same CTF ID replaces the previous uploaded image. SVG uploads are not accepted; the bundled default SVG can still be selected with **Use Default Image**.
+
+The advanced image URL/path field is still available for manually hosted images.
+
+> Uploaded images are runtime data. If your deployment replaces the entire app directory, preserve `appserver/static/images/uploads/` before replacing the app and restore it afterward.
 
 ### 6. Registration opens
 
@@ -554,3 +570,20 @@ python3 -m unittest discover -s tests -v
 
 - `SA-ctf_scoreboard` — participant questions, submissions, hints, and scoring views
 - `SA-ctf_scoreboard_admin` — administrator content and scoring management
+
+
+## Image upload permissions
+
+The Splunk process must be able to write to:
+
+```text
+$SPLUNK_HOME/etc/apps/SA-ctf_registration/appserver/static/images/uploads/
+```
+
+For the rootless Podman deployment:
+
+```bash
+podman exec -u splunk splunk   test -w /opt/splunk/etc/apps/SA-ctf_registration/appserver/static/images/uploads   && echo writable
+```
+
+The backend creates the uploads directory if it does not already exist and the parent directory is writable.
