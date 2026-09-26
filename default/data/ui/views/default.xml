@@ -1,0 +1,4 @@
+<nav>
+  <view name="register" default="true"/>
+  <view name="admin"/>
+</nav>
