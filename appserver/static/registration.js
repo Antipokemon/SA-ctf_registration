@@ -5,10 +5,11 @@ require([
     "use strict";
 
     var base = "/en-US/splunkd/__raw/servicesNS/nobody/SA-ctf_registration/ctf_registration";
+    var defaultImage = "/static/app/SA-ctf_registration/images/default-ctf.svg";
+    var eventsById = {};
 
     function showMessage(text, isError) {
-        var el = $("#ctfr-message");
-        el.text(text || "").toggleClass("error", !!isError).show();
+        $("#ctfr-message").text(text || "").toggleClass("error", !!isError).show();
     }
 
     function prettyTime(value) {
@@ -17,71 +18,138 @@ require([
         return isNaN(date.getTime()) ? value : date.toLocaleString();
     }
 
-    function applyStatus(data) {
-        $("#ctfr-state").text(data.state || "UNKNOWN");
-        $("#ctfr-event").text(data.event || "CTF Event");
-        $("#ctfr-opens").text(prettyTime(data.opens_at));
-        $("#ctfr-closes").text(prettyTime(data.closes_at));
-        $("#ctfr-user").text(data.username || "—");
+    function badgeText(event) {
+        if (event.registration_state === "OPEN") { return "REGISTRATION OPEN"; }
+        if (event.event_state === "IN_PROGRESS") { return "IN PROGRESS"; }
+        if (event.registration_state === "UPCOMING") { return "COMING SOON"; }
+        if (event.registered) { return "REGISTERED"; }
+        return "REGISTRATION CLOSED";
+    }
 
-        var record = data.registration || {};
+    function renderEvents(data) {
+        var grid = $("#ctfr-events").empty();
+        eventsById = {};
+
+        (data.events || []).forEach(function(event) {
+            eventsById[event.ctf_id] = event;
+
+            var card = $("<article>").addClass("ctfr-event-card");
+            var image = $("<img>")
+                .addClass("ctfr-event-image")
+                .attr("alt", event.name || "CTF event")
+                .attr("src", event.image_url || defaultImage)
+                .on("error", function() { $(this).attr("src", defaultImage); });
+
+            var body = $("<div>").addClass("ctfr-event-body");
+            $("<div>").addClass("ctfr-badge").text(badgeText(event)).appendTo(body);
+            $("<h2>").text(event.name || event.ctf_id).appendTo(body);
+            $("<p>").addClass("ctfr-short").text(event.short_description || "").appendTo(body);
+
+            var dates = $("<dl>").addClass("ctfr-event-dates");
+            $("<dt>").text("Registration").appendTo(dates);
+            $("<dd>").text(prettyTime(event.registration_opens) + " → " + prettyTime(event.registration_closes)).appendTo(dates);
+            $("<dt>").text("Event").appendTo(dates);
+            $("<dd>").text(prettyTime(event.event_starts) + " → " + prettyTime(event.event_ends)).appendTo(dates);
+            dates.appendTo(body);
+
+            var button = $("<button>")
+                .addClass("btn btn-primary")
+                .attr("type", "button")
+                .attr("data-ctf-id", event.ctf_id)
+                .text(event.registration_state === "OPEN" ? (event.registered ? "View / Update" : "Register") : "View Details");
+            body.append(button);
+
+            card.append(image, body);
+            grid.append(card);
+        });
+
+        if (!(data.events || []).length) {
+            grid.append($("<div>").addClass("ctfr-empty").text("There are no upcoming CTF events."));
+        }
+    }
+
+    function openEvent(ctfId) {
+        var event = eventsById[ctfId];
+        if (!event) { return; }
+
+        $("#ctfr-detail").show();
+        $("#ctfr-detail-image").attr("src", event.image_url || defaultImage);
+        $("#ctfr-detail-name").text(event.name || event.ctf_id);
+        $("#ctfr-detail-description").text(event.description || event.short_description || "");
+        $("#ctfr-detail-registration-window").text(prettyTime(event.registration_opens) + " → " + prettyTime(event.registration_closes));
+        $("#ctfr-detail-event-window").text(prettyTime(event.event_starts) + " → " + prettyTime(event.event_ends));
+        $("#ctfr-detail-state").text(badgeText(event));
+
+        var record = event.registration || {};
+        $("#ctfr-id").val(event.ctf_id);
         $("#ctfr-display").val(record.DisplayUsername || "");
         $("#ctfr-team").val(record.Team || "");
         $("#ctfr-first").val(record.FirstName || "");
         $("#ctfr-last").val(record.LastName || "");
         $("#ctfr-email").val(record.Email || "");
 
-        var canEdit = !!data.can_register;
+        var canEdit = event.registration_state === "OPEN" && (!event.registered || event.allow_updates);
         $("#ctfr-form :input").prop("disabled", !canEdit);
+        $("#ctfr-id").prop("disabled", false);
 
-        if (data.registered) {
+        if (event.registered) {
             $("#ctfr-submit").text("Update Registration");
-        } else {
+            $("#ctfr-registration-note").text(
+                canEdit ? "You are registered. You may update your information while registration remains open."
+                        : "You are registered. Registration changes are closed."
+            );
+        } else if (event.registration_state === "OPEN") {
             $("#ctfr-submit").text("Register");
+            $("#ctfr-registration-note").text("Registration is open for this CTF.");
+        } else if (event.registration_state === "UPCOMING") {
+            $("#ctfr-registration-note").text("Registration has not opened yet.");
+        } else {
+            $("#ctfr-registration-note").text("Registration is closed for this CTF.");
         }
 
-        if (!canEdit) {
-            if (data.state === "UPCOMING") {
-                showMessage("Registration has not opened yet.", false);
-            } else if (data.state === "CLOSED") {
-                showMessage(data.registered ? "Registration is closed. Your registration is read-only." : "Registration is closed.", false);
-            } else if (data.state === "DISABLED") {
-                showMessage("Registration is currently disabled by the event administrator.", false);
-            }
-        } else if (data.registered) {
-            showMessage("You are registered. You may update your information until registration closes.", false);
-        } else {
-            $("#ctfr-message").hide();
-        }
+        document.getElementById("ctfr-detail").scrollIntoView({behavior: "smooth", block: "start"});
     }
 
-    function loadStatus() {
-        $.ajax({ url: base + "/status", method: "GET", dataType: "json", cache: false })
-            .done(applyStatus)
+    function loadEvents() {
+        $.ajax({url: base + "/events", method: "GET", dataType: "json", cache: false})
+            .done(renderEvents)
             .fail(function(xhr) {
-                showMessage("Unable to load registration status: " + (xhr.responseText || xhr.statusText), true);
-                $("#ctfr-form :input").prop("disabled", true);
+                showMessage("Unable to load CTF events: " + (xhr.responseText || xhr.statusText), true);
             });
     }
+
+    $("#ctfr-events").on("click", "button[data-ctf-id]", function() {
+        openEvent($(this).attr("data-ctf-id"));
+    });
+
+    $("#ctfr-detail-close").on("click", function() {
+        $("#ctfr-detail").hide();
+    });
 
     $("#ctfr-form").on("submit", function(event) {
         event.preventDefault();
         $("#ctfr-submit").prop("disabled", true);
+
         $.ajax({
             url: base + "/register",
             method: "POST",
             dataType: "json",
             data: $(this).serialize()
         }).done(function(data) {
-            showMessage(data.message || "Registration saved.", false);
-            loadStatus();
+            var msg = data.message || "Registration saved.";
+            if (data.roles_added && data.roles_added.length) {
+                msg += " CTF access role(s) added: " + data.roles_added.join(", ") + ".";
+            }
+            showMessage(msg, false);
+            loadEvents();
         }).fail(function(xhr) {
-            var message = xhr.responseJSON && xhr.responseJSON.message ? xhr.responseJSON.message : (xhr.responseText || xhr.statusText);
+            var message = xhr.responseJSON && xhr.responseJSON.message ?
+                xhr.responseJSON.message : (xhr.responseText || xhr.statusText);
             showMessage("Registration failed: " + message, true);
         }).always(function() {
             $("#ctfr-submit").prop("disabled", false);
         });
     });
 
-    loadStatus();
+    loadEvents();
 });

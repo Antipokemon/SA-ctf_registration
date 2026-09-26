@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import ssl
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,11 +17,17 @@ from splunk.persistconn.application import PersistentServerConnectionApplication
 APP = "SA-ctf_registration"
 BASE = Path(os.environ.get("SPLUNK_HOME", "/opt/splunk")) / "etc" / "apps" / APP
 BIN = BASE / "bin"
-import sys
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 
-from registration_core import parse_bool, parse_iso8601, registration_state, validate_registration
+from registration_core import (
+    event_state,
+    parse_bool,
+    parse_roles,
+    registration_state,
+    validate_event,
+    validate_registration,
+)
 
 LOG_PATH = Path(os.environ.get("SPLUNK_HOME", "/opt/splunk")) / "var" / "log" / "splunk" / "ctf_registration.log"
 logger = logging.getLogger("ctf_registration")
@@ -35,6 +42,8 @@ LOCAL_CONFIG = BASE / "local" / "ctf_registration.conf"
 SECRETS_CONFIG = BASE / "local" / "registration_secrets.conf"
 
 ADMIN_ROLES = {"admin", "ctf_admin", "ctf_registration_admin"}
+EVENTS_COLLECTION = "ctf_events"
+REGISTRATIONS_COLLECTION = "ctf_registrations"
 
 
 def _json_response(payload, status=200):
@@ -53,13 +62,13 @@ def _pairs_to_dict(pairs):
     return result
 
 
-def _load_config():
+def _load_general():
     parser = configparser.ConfigParser(interpolation=None)
     parser.optionxform = str.lower
     parser.read([str(DEFAULT_CONFIG), str(LOCAL_CONFIG)])
-    if not parser.has_section("registration"):
-        raise RuntimeError("Missing [registration] configuration")
-    return dict(parser.items("registration"))
+    if not parser.has_section("general"):
+        raise RuntimeError("Missing [general] configuration")
+    return dict(parser.items("general"))
 
 
 def _load_secret():
@@ -70,33 +79,13 @@ def _load_secret():
     return ""
 
 
-def _save_config(values):
-    LOCAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    current = _load_config()
-    allowed = {
-        "enabled", "opens_at", "closes_at", "event", "search_url",
-        "search_url_desc", "scoring_url", "allow_updates", "scoreboard_app",
-        "users_collection", "writer_username"
-    }
-    for key, value in values.items():
-        if key in allowed:
-            current[key] = str(value)
-
-    parser = configparser.ConfigParser(interpolation=None)
-    parser["registration"] = current
-    tmp = LOCAL_CONFIG.with_suffix(".conf.tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        parser.write(fh)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, LOCAL_CONFIG)
-
-
 def _urlopen_json(url, method="GET", token=None, data=None, headers=None):
     request_headers = {"Accept": "application/json"}
     if token:
         request_headers["Authorization"] = "Splunk " + token
     if headers:
         request_headers.update(headers)
+
     body = None
     if data is not None:
         if isinstance(data, (dict, list)):
@@ -106,6 +95,7 @@ def _urlopen_json(url, method="GET", token=None, data=None, headers=None):
             body = data.encode("utf-8")
         else:
             body = data
+
     req = urllib.request.Request(url, data=body, headers=request_headers, method=method)
     context = ssl._create_unverified_context()
     try:
@@ -121,8 +111,14 @@ def _service_token(rest_uri, username):
     password = _load_secret()
     if not username or not password:
         return None
-    body = urllib.parse.urlencode({"username": username, "password": password, "output_mode": "json"}).encode("utf-8")
-    req = urllib.request.Request(rest_uri.rstrip("/") + "/services/auth/login", data=body, method="POST")
+    body = urllib.parse.urlencode(
+        {"username": username, "password": password, "output_mode": "json"}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        rest_uri.rstrip("/") + "/services/auth/login",
+        data=body,
+        method="POST",
+    )
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     context = ssl._create_unverified_context()
     try:
@@ -141,7 +137,10 @@ def _auth_context(rest_uri, token):
     if not entries:
         return {"roles": []}
     content = entries[0].get("content", {})
-    return {"roles": content.get("roles", []), "username": entries[0].get("name")}
+    roles = content.get("roles", [])
+    if isinstance(roles, str):
+        roles = [roles]
+    return {"roles": roles, "username": entries[0].get("name")}
 
 
 def _is_admin(rest_uri, token):
@@ -149,48 +148,176 @@ def _is_admin(rest_uri, token):
     return bool(roles & ADMIN_ROLES)
 
 
-def _kv_base(rest_uri, config):
-    app = config.get("scoreboard_app", "SA-ctf_scoreboard")
-    collection = config.get("users_collection", "ctf_users")
-    return rest_uri.rstrip("/") + f"/servicesNS/nobody/{urllib.parse.quote(app)}/storage/collections/data/{urllib.parse.quote(collection)}"
-
-
-def _writer_token(request, config):
+def _writer_token(request, general):
     caller = request["session"]["authtoken"]
-    service = _service_token(request["server"]["rest_uri"], config.get("writer_username", ""))
+    service = _service_token(
+        request["server"]["rest_uri"],
+        general.get("writer_username", ""),
+    )
     return service or caller
 
 
-def _find_user(request, config, username):
-    token = _writer_token(request, config)
-    query = json.dumps({"Username": username}, separators=(",", ":"))
-    url = _kv_base(request["server"]["rest_uri"], config) + "?" + urllib.parse.urlencode({"query": query, "limit": 1})
+def _kv_base(rest_uri, collection):
+    return (
+        rest_uri.rstrip("/")
+        + f"/servicesNS/nobody/{APP}/storage/collections/data/"
+        + urllib.parse.quote(collection)
+    )
+
+
+def _kv_query(request, general, collection, query=None, limit=0, sort=None):
+    token = _writer_token(request, general)
+    params = {
+        "query": json.dumps(query or {}, separators=(",", ":")),
+        "limit": str(limit),
+    }
+    if sort:
+        params["sort"] = json.dumps(sort, separators=(",", ":"))
+    url = _kv_base(request["server"]["rest_uri"], collection) + "?" + urllib.parse.urlencode(params)
     rows = _urlopen_json(url, token=token)
-    return rows[0] if isinstance(rows, list) and rows else None
+    return rows if isinstance(rows, list) else []
 
 
-def _upsert_user(request, config, document):
-    token = _writer_token(request, config)
-    existing = _find_user(request, config, document["Username"])
-    base = _kv_base(request["server"]["rest_uri"], config)
+def _kv_insert(request, general, collection, document):
+    token = _writer_token(request, general)
+    return _urlopen_json(
+        _kv_base(request["server"]["rest_uri"], collection),
+        method="POST",
+        token=token,
+        data=document,
+    )
+
+
+def _kv_update(request, general, collection, key, document):
+    token = _writer_token(request, general)
+    return _urlopen_json(
+        _kv_base(request["server"]["rest_uri"], collection) + "/" + urllib.parse.quote(key),
+        method="POST",
+        token=token,
+        data=document,
+    )
+
+
+def _event_by_id(request, general, ctf_id):
+    rows = _kv_query(request, general, EVENTS_COLLECTION, {"ctf_id": ctf_id}, limit=1)
+    return rows[0] if rows else None
+
+
+def _registration_by_user(request, general, ctf_id, username):
+    rows = _kv_query(
+        request,
+        general,
+        REGISTRATIONS_COLLECTION,
+        {"ctf_id": ctf_id, "Username": username},
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def _upsert_registration(request, general, document):
+    existing = _registration_by_user(
+        request,
+        general,
+        document["ctf_id"],
+        document["Username"],
+    )
     if existing and existing.get("_key"):
         document["_key"] = existing["_key"]
-        url = base + "/" + urllib.parse.quote(existing["_key"])
-        _urlopen_json(url, method="POST", token=token, data=document)
+        _kv_update(
+            request,
+            general,
+            REGISTRATIONS_COLLECTION,
+            existing["_key"],
+            document,
+        )
         return "updated"
-    _urlopen_json(base, method="POST", token=token, data=document)
+    _kv_insert(request, general, REGISTRATIONS_COLLECTION, document)
     return "created"
 
 
-def _roster(request, config):
-    token = _writer_token(request, config)
-    event = config.get("event", "")
-    query = json.dumps({"Event": event}, separators=(",", ":")) if event else "{}"
-    url = _kv_base(request["server"]["rest_uri"], config) + "?" + urllib.parse.urlencode({"query": query, "limit": 0})
-    rows = _urlopen_json(url, token=token)
-    if not isinstance(rows, list):
-        return []
-    return sorted(rows, key=lambda x: (str(x.get("Team", "")).lower(), str(x.get("Username", "")).lower()))
+def _upsert_event(request, general, document):
+    existing = _event_by_id(request, general, document["ctf_id"])
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if existing and existing.get("_key"):
+        document["_key"] = existing["_key"]
+        document["created_at"] = existing.get("created_at", now)
+        document["updated_at"] = now
+        _kv_update(request, general, EVENTS_COLLECTION, existing["_key"], document)
+        return "updated"
+    document["created_at"] = now
+    document["updated_at"] = now
+    _kv_insert(request, general, EVENTS_COLLECTION, document)
+    return "created"
+
+
+def _user_endpoint(rest_uri, username):
+    return rest_uri.rstrip("/") + "/services/authentication/users/" + urllib.parse.quote(username, safe="")
+
+
+def _get_user_roles(request, general, username):
+    token = _writer_token(request, general)
+    url = _user_endpoint(request["server"]["rest_uri"], username) + "?output_mode=json"
+    payload = _urlopen_json(url, token=token)
+    entries = payload.get("entry", []) if isinstance(payload, dict) else []
+    if not entries:
+        raise RuntimeError(f"Splunk user not found: {username}")
+    roles = entries[0].get("content", {}).get("roles", [])
+    if isinstance(roles, str):
+        roles = [roles]
+    return [str(role) for role in roles]
+
+
+def _ensure_participant_roles(request, general, username, required_roles):
+    required = parse_roles(required_roles)
+    current = _get_user_roles(request, general, username)
+    missing = [role for role in required if role not in current]
+    if not missing:
+        return {"required": required, "added": [], "roles": current}
+
+    merged = list(current)
+    for role in missing:
+        if role not in merged:
+            merged.append(role)
+
+    pairs = [("roles", role) for role in merged]
+    pairs.append(("output_mode", "json"))
+    body = urllib.parse.urlencode(pairs).encode("utf-8")
+    token = _writer_token(request, general)
+    _urlopen_json(
+        _user_endpoint(request["server"]["rest_uri"], username),
+        method="POST",
+        token=token,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    logger.info("Assigned CTF role(s) user=%s roles=%s", username, ",".join(missing))
+    return {"required": required, "added": missing, "roles": merged}
+
+
+def _public_event(event, registration=None):
+    reg_state = registration_state(event)
+    evt_state = event_state(event)
+    return {
+        "ctf_id": event.get("ctf_id", ""),
+        "name": event.get("name", ""),
+        "short_description": event.get("short_description", ""),
+        "description": event.get("description", ""),
+        "image_url": event.get("image_url", ""),
+        "registration_opens": event.get("registration_opens", ""),
+        "registration_closes": event.get("registration_closes", ""),
+        "event_starts": event.get("event_starts", ""),
+        "event_ends": event.get("event_ends", ""),
+        "search_url": event.get("search_url", ""),
+        "search_url_desc": event.get("search_url_desc", ""),
+        "scoring_url": event.get("scoring_url", ""),
+        "participant_roles": parse_roles(event.get("participant_roles", "")),
+        "enabled": parse_bool(event.get("enabled"), False),
+        "allow_updates": parse_bool(event.get("allow_updates"), True),
+        "registration_state": reg_state,
+        "event_state": evt_state,
+        "registered": bool(registration),
+        "registration": registration or {},
+    }
 
 
 class RegistrationHandler(PersistentServerConnectionApplication):
@@ -217,114 +344,184 @@ class RegistrationHandler(PersistentServerConnectionApplication):
 
         path = (request.get("path_info") or "").strip("/")
         method = (request.get("method") or "GET").upper()
-        if path == "status" and method == "GET":
-            return _json_response(self._status(request))
+
+        if path == "events" and method == "GET":
+            return _json_response(self._events(request))
         if path == "register" and method == "POST":
             return _json_response(self._register(request))
-        if path == "admin/config" and method == "GET":
+
+        if path == "admin/events" and method == "GET":
             self._require_admin(request)
-            return _json_response(self._admin_config(request))
-        if path == "admin/config" and method == "POST":
+            return _json_response(self._admin_events(request))
+        if path == "admin/event" and method == "POST":
             self._require_admin(request)
-            return _json_response(self._admin_save(request))
+            return _json_response(self._admin_save_event(request))
         if path == "admin/roster" and method == "GET":
             self._require_admin(request)
             return _json_response(self._admin_roster(request))
+
         return _json_response({"message": "Not found"}, 404)
 
     def _require_admin(self, request):
         if not _is_admin(request["server"]["rest_uri"], request["session"]["authtoken"]):
             raise PermissionError("CTF registration administrator role is required")
 
-    def _status(self, request):
-        config = _load_config()
-        state = registration_state(config)
+    def _events(self, request):
+        general = _load_general()
         username = request["session"]["user"]
-        record = _find_user(request, config, username)
-        registered = bool(record)
-        allow_updates = parse_bool(config.get("allow_updates"), True)
-        can_register = state == "OPEN" and (not registered or allow_updates)
-        return {
-            "state": state,
-            "enabled": parse_bool(config.get("enabled")),
-            "event": config.get("event", ""),
-            "opens_at": config.get("opens_at", ""),
-            "closes_at": config.get("closes_at", ""),
-            "username": username,
-            "registered": registered,
-            "can_register": can_register,
-            "registration": record or {},
-        }
+        events = _kv_query(request, general, EVENTS_COLLECTION, {}, limit=0)
+        result = []
+
+        for event in events:
+            try:
+                evt_state = event_state(event)
+                if evt_state == "COMPLETED":
+                    continue
+                registration = _registration_by_user(
+                    request,
+                    general,
+                    event.get("ctf_id", ""),
+                    username,
+                )
+                result.append(_public_event(event, registration))
+            except ValueError as exc:
+                logger.warning("Skipping invalid event %s: %s", event.get("ctf_id"), exc)
+
+        result.sort(key=lambda row: (row.get("event_starts", ""), row.get("name", "").lower()))
+        return {"username": username, "events": result}
 
     def _register(self, request):
-        config = _load_config()
-        state = registration_state(config)
-        if state != "OPEN":
-            raise PermissionError(f"Registration is not open (state: {state})")
+        general = _load_general()
         values = _pairs_to_dict(request.get("form"))
+        ctf_id = values.get("ctf_id", "").strip().lower()
+        if not ctf_id:
+            raise ValueError("ctf_id is required")
+
+        event = _event_by_id(request, general, ctf_id)
+        if not event:
+            raise ValueError("CTF event was not found")
+
+        state = registration_state(event)
+        if state != "OPEN":
+            raise PermissionError(f"Registration is not open for this CTF (state: {state})")
+
         clean = validate_registration(values)
         username = request["session"]["user"]
-        existing = _find_user(request, config, username)
-        if existing and not parse_bool(config.get("allow_updates"), True):
-            raise PermissionError("Registration updates are disabled")
+        existing = _registration_by_user(request, general, ctf_id, username)
+        if existing and not parse_bool(event.get("allow_updates"), True):
+            raise PermissionError("Registration updates are disabled for this CTF")
 
+        role_result = _ensure_participant_roles(
+            request,
+            general,
+            username,
+            event.get("participant_roles", general.get("default_participant_roles", "ctf_competitor")),
+        )
+
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         doc = dict(existing or {})
         doc.update(clean)
         doc.update({
+            "ctf_id": ctf_id,
             "Username": username,
-            "SearchUrl": config.get("search_url", ""),
-            "SearchUrlDesc": config.get("search_url_desc", ""),
-            "SearchUrl2": doc.get("SearchUrl2", ""),
-            "SearchUrl2Desc": doc.get("SearchUrl2Desc", ""),
-            "SearchUrl3": doc.get("SearchUrl3", ""),
-            "SearchUrl3Desc": doc.get("SearchUrl3Desc", ""),
-            "SearchUrl4": doc.get("SearchUrl4", ""),
-            "SearchUrl4Desc": doc.get("SearchUrl4Desc", ""),
-            "ScoringUrl": config.get("scoring_url", ""),
-            "Event": config.get("event", ""),
-            "RegistrationUpdated": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "SearchUrl": event.get("search_url", ""),
+            "SearchUrlDesc": event.get("search_url_desc", ""),
+            "ScoringUrl": event.get("scoring_url", ""),
+            "status": "registered",
+            "registered_at": existing.get("registered_at", now) if existing else now,
+            "updated_at": now,
         })
-        result = _upsert_user(request, config, doc)
-        logger.info("Registration %s user=%s event=%s team=%s", result, username, doc.get("Event"), doc.get("Team"))
-        return {"message": "Registration saved successfully.", "result": result}
 
-    def _admin_config(self, request):
-        config = _load_config()
+        result = _upsert_registration(request, general, doc)
+        logger.info(
+            "Registration %s user=%s ctf_id=%s team=%s",
+            result,
+            username,
+            ctf_id,
+            doc.get("Team"),
+        )
         return {
-            "state": registration_state(config),
-            "enabled": parse_bool(config.get("enabled")),
-            "opens_at": config.get("opens_at", ""),
-            "closes_at": config.get("closes_at", ""),
-            "event": config.get("event", ""),
-            "search_url": config.get("search_url", ""),
-            "search_url_desc": config.get("search_url_desc", ""),
-            "scoring_url": config.get("scoring_url", ""),
-            "allow_updates": parse_bool(config.get("allow_updates"), True),
+            "message": "Registration saved successfully.",
+            "result": result,
+            "roles_added": role_result["added"],
+            "required_roles": role_result["required"],
         }
 
-    def _admin_save(self, request):
+    def _admin_events(self, request):
+        general = _load_general()
+        events = _kv_query(request, general, EVENTS_COLLECTION, {}, limit=0)
+        output = []
+        for event in events:
+            safe = dict(event)
+            try:
+                safe["registration_state"] = registration_state(event)
+                safe["event_state"] = event_state(event)
+            except ValueError as exc:
+                safe["registration_state"] = "INVALID"
+                safe["event_state"] = "INVALID"
+                safe["validation_error"] = str(exc)
+            output.append(safe)
+        output.sort(key=lambda row: (row.get("event_starts", ""), row.get("name", "").lower()))
+        return {"events": output}
+
+    def _admin_save_event(self, request):
+        general = _load_general()
         values = _pairs_to_dict(request.get("form"))
-        candidate = _load_config()
-        for field in ("enabled", "opens_at", "closes_at", "event", "search_url", "search_url_desc", "scoring_url", "allow_updates"):
-            if field in values:
-                candidate[field] = values[field]
-        parse_iso8601(candidate.get("opens_at"))
-        parse_iso8601(candidate.get("closes_at"))
-        if parse_iso8601(candidate["closes_at"]) <= parse_iso8601(candidate["opens_at"]):
-            raise ValueError("Closes at must be later than opens at")
-        if not candidate.get("event", "").strip():
-            raise ValueError("Event is required")
-        if not candidate.get("search_url", "").strip():
-            raise ValueError("Search URL is required")
-        _save_config(candidate)
-        logger.info("Registration configuration updated by %s", request["session"]["user"])
-        return {"message": "Registration configuration saved.", "state": registration_state(candidate)}
+        allowed_roles = parse_roles(general.get("allowed_participant_roles", "ctf_competitor"))
+        if not values.get("participant_roles"):
+            values["participant_roles"] = general.get("default_participant_roles", "ctf_competitor")
+
+        event = validate_event(values, allowed_roles=allowed_roles)
+        result = _upsert_event(request, general, event)
+        logger.info(
+            "CTF event %s by=%s ctf_id=%s",
+            result,
+            request["session"]["user"],
+            event["ctf_id"],
+        )
+        return {"message": "CTF event saved.", "result": result, "ctf_id": event["ctf_id"]}
 
     def _admin_roster(self, request):
-        config = _load_config()
-        users = _roster(request, config)
+        general = _load_general()
+        query = _pairs_to_dict(request.get("query"))
+        ctf_id = query.get("ctf_id", "").strip().lower()
+        if not ctf_id:
+            raise ValueError("ctf_id is required")
+
+        event = _event_by_id(request, general, ctf_id)
+        if not event:
+            raise ValueError("CTF event was not found")
+
+        users = _kv_query(
+            request,
+            general,
+            REGISTRATIONS_COLLECTION,
+            {"ctf_id": ctf_id},
+            limit=0,
+        )
+        users.sort(key=lambda x: (str(x.get("Team", "")).lower(), str(x.get("Username", "")).lower()))
         teams = len({row.get("Team") for row in users if row.get("Team")})
+
         safe = []
         for row in users:
-            safe.append({k: row.get(k, "") for k in ("Username", "DisplayUsername", "Team", "Email", "FirstName", "LastName", "Event")})
-        return {"count": len(safe), "teams": teams, "event": config.get("event", ""), "users": safe}
+            safe.append({
+                k: row.get(k, "")
+                for k in (
+                    "Username",
+                    "DisplayUsername",
+                    "Team",
+                    "Email",
+                    "FirstName",
+                    "LastName",
+                    "status",
+                    "registered_at",
+                    "updated_at",
+                )
+            })
+        return {
+            "count": len(safe),
+            "teams": teams,
+            "ctf_id": ctf_id,
+            "event": event.get("name", ctf_id),
+            "users": safe,
+        }

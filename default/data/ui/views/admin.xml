@@ -6,58 +6,92 @@
         <div id="ctfr-admin-root" class="ctfr-shell">
           <div class="ctfr-hero">
             <div>
-              <h1>Registration Administration</h1>
-              <p>Control the active registration window and review the event roster.</p>
+              <h1>CTF Event Administration</h1>
+              <p>Create and manage multiple concurrent CTF registration windows.</p>
             </div>
-            <div id="ctfr-admin-state" class="ctfr-badge">Loading</div>
+            <button id="ctfr-new-event" type="button" class="btn btn-primary">New CTF</button>
           </div>
 
           <div id="ctfr-admin-message" class="ctfr-message" style="display:none;"></div>
 
-          <div class="ctfr-grid">
+          <div class="ctfr-admin-grid">
             <section class="ctfr-card">
-              <h2>Event Configuration</h2>
-              <form id="ctfr-admin-form">
-                <label class="ctfr-check"><input id="ctfr-enabled" name="enabled" type="checkbox" /> Registration enabled</label>
-
-                <label for="ctfr-event-name">Event</label>
-                <input id="ctfr-event-name" name="event" type="text" maxlength="100" required="required" />
-
-                <label for="ctfr-open-time">Opens at (ISO-8601)</label>
-                <input id="ctfr-open-time" name="opens_at" type="text" placeholder="2026-10-01T12:00:00Z" required="required" />
-
-                <label for="ctfr-close-time">Closes at (ISO-8601)</label>
-                <input id="ctfr-close-time" name="closes_at" type="text" placeholder="2026-10-05T23:59:59Z" required="required" />
-
-                <label for="ctfr-search-url">Search URL</label>
-                <input id="ctfr-search-url" name="search_url" type="text" maxlength="500" required="required" />
-
-                <label for="ctfr-search-desc">Search URL description</label>
-                <input id="ctfr-search-desc" name="search_url_desc" type="text" maxlength="100" />
-
-                <label for="ctfr-scoring-url">Scoring URL</label>
-                <input id="ctfr-scoring-url" name="scoring_url" type="text" maxlength="500" />
-
-                <label class="ctfr-check"><input id="ctfr-allow-updates" name="allow_updates" type="checkbox" /> Allow participants to update while registration is open</label>
-
-                <button type="submit" class="btn btn-primary">Save Configuration</button>
-              </form>
-            </section>
-
-            <section class="ctfr-card ctfr-roster-card">
-              <div class="ctfr-card-heading">
-                <h2>Current Event Roster</h2>
-                <button id="ctfr-refresh-roster" type="button" class="btn">Refresh</button>
-              </div>
-              <div id="ctfr-roster-summary">Loading…</div>
+              <div class="ctfr-card-heading"><h2>CTF Events</h2></div>
               <div class="ctfr-table-wrap">
-                <table class="table table-striped" id="ctfr-roster-table">
-                  <thead><tr><th>Username</th><th>Display</th><th>Team</th><th>Email</th></tr></thead>
+                <table class="table table-striped" id="ctfr-events-table">
+                  <thead>
+                    <tr><th>Name</th><th>Registration</th><th>Event</th><th>Starts</th><th></th></tr>
+                  </thead>
                   <tbody></tbody>
                 </table>
               </div>
             </section>
+
+            <section class="ctfr-card">
+              <h2 id="ctfr-editor-title">Create CTF</h2>
+              <form id="ctfr-admin-form" class="ctfr-admin-form">
+                <label for="ctfr-ctf-id">CTF ID</label>
+                <input id="ctfr-ctf-id" type="text" maxlength="64" placeholder="asteron-easy-2026" required="required" />
+
+                <label for="ctfr-name">Name</label>
+                <input id="ctfr-name" type="text" maxlength="120" required="required" />
+
+                <label for="ctfr-short-description">Short description</label>
+                <textarea id="ctfr-short-description" maxlength="280" required="required"></textarea>
+
+                <label for="ctfr-description">Full description</label>
+                <textarea id="ctfr-description" maxlength="6000" required="required"></textarea>
+
+                <label for="ctfr-image-url">Image URL/path</label>
+                <input id="ctfr-image-url" type="text" maxlength="1000" placeholder="/static/app/SA-ctf_registration/images/asteron-easy.png" />
+
+                <label for="ctfr-registration-opens">Registration opens</label>
+                <input id="ctfr-registration-opens" type="datetime-local" required="required" />
+
+                <label for="ctfr-registration-closes">Registration closes</label>
+                <input id="ctfr-registration-closes" type="datetime-local" required="required" />
+
+                <label for="ctfr-event-starts">Event starts</label>
+                <input id="ctfr-event-starts" type="datetime-local" required="required" />
+
+                <label for="ctfr-event-ends">Event ends</label>
+                <input id="ctfr-event-ends" type="datetime-local" required="required" />
+
+                <label for="ctfr-search-url">Search URL</label>
+                <input id="ctfr-search-url" type="url" maxlength="1000" required="required" />
+
+                <label for="ctfr-search-desc">Search URL description</label>
+                <input id="ctfr-search-desc" type="text" maxlength="120" />
+
+                <label for="ctfr-scoring-url">Scoring URL</label>
+                <input id="ctfr-scoring-url" type="url" maxlength="1000" />
+
+                <label for="ctfr-participant-roles">Participant roles</label>
+                <input id="ctfr-participant-roles" type="text" maxlength="250" value="ctf_competitor" required="required" />
+                <p class="ctfr-help">Roles must also be listed in allowed_participant_roles in ctf_registration.conf.</p>
+
+                <label class="ctfr-check"><input id="ctfr-enabled" type="checkbox" checked="checked" /> Enabled</label>
+                <label class="ctfr-check"><input id="ctfr-allow-updates" type="checkbox" checked="checked" /> Allow registration updates while open</label>
+
+                <br/>
+                <button type="submit" class="btn btn-primary">Save CTF</button>
+              </form>
+            </section>
           </div>
+
+          <section id="ctfr-roster-panel" class="ctfr-card ctfr-roster-panel" style="display:none;">
+            <div class="ctfr-card-heading">
+              <h2>Selected CTF Roster</h2>
+              <button id="ctfr-refresh-roster" type="button" class="btn">Refresh</button>
+            </div>
+            <div id="ctfr-roster-summary">Loading…</div>
+            <div class="ctfr-table-wrap">
+              <table class="table table-striped" id="ctfr-roster-table">
+                <thead><tr><th>Username</th><th>Display</th><th>Team</th><th>Email</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </section>
         </div>
       </html>
     </panel>

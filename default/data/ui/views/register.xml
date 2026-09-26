@@ -6,46 +6,61 @@
         <div id="ctfr-root" class="ctfr-shell">
           <div class="ctfr-hero">
             <div>
-              <h1>CTF Registration</h1>
-              <p id="ctfr-event">Loading event information…</p>
+              <h1>CTF Events</h1>
+              <p>Choose an upcoming CTF to view details or register.</p>
             </div>
-            <div id="ctfr-state" class="ctfr-badge">Loading</div>
           </div>
 
           <div id="ctfr-message" class="ctfr-message" style="display:none;"></div>
+          <div id="ctfr-events" class="ctfr-events-grid"></div>
 
-          <div class="ctfr-grid">
-            <section class="ctfr-card">
-              <h2>Registration Window</h2>
-              <dl>
-                <dt>Opens</dt><dd id="ctfr-opens">—</dd>
-                <dt>Closes</dt><dd id="ctfr-closes">—</dd>
-                <dt>Splunk User</dt><dd id="ctfr-user">—</dd>
-              </dl>
-            </section>
+          <section id="ctfr-detail" class="ctfr-detail" style="display:none;">
+            <div class="ctfr-detail-hero">
+              <img id="ctfr-detail-image" class="ctfr-detail-image" alt="CTF event image" />
+              <div class="ctfr-detail-content">
+                <button id="ctfr-detail-close" type="button" class="btn ctfr-detail-close">Close</button>
+                <div id="ctfr-detail-state" class="ctfr-badge"></div>
+                <h2 id="ctfr-detail-name"></h2>
+                <p id="ctfr-detail-description" class="ctfr-detail-description"></p>
+                <dl class="ctfr-detail-times">
+                  <dt>Registration</dt><dd id="ctfr-detail-registration-window"></dd>
+                  <dt>Event</dt><dd id="ctfr-detail-event-window"></dd>
+                </dl>
+              </div>
+            </div>
 
-            <section class="ctfr-card">
+            <div class="ctfr-form-card">
               <h2>Your Registration</h2>
+              <p id="ctfr-registration-note"></p>
               <form id="ctfr-form">
-                <label for="ctfr-display">Display name</label>
-                <input id="ctfr-display" name="display_name" type="text" maxlength="80" required="required" />
-
-                <label for="ctfr-team">Team name</label>
-                <input id="ctfr-team" name="team" type="text" maxlength="80" required="required" />
-
-                <label for="ctfr-first">First name</label>
-                <input id="ctfr-first" name="first_name" type="text" maxlength="80" />
-
-                <label for="ctfr-last">Last name</label>
-                <input id="ctfr-last" name="last_name" type="text" maxlength="80" />
-
-                <label for="ctfr-email">Email (optional)</label>
-                <input id="ctfr-email" name="email" type="email" maxlength="254" />
-
+                <input id="ctfr-id" name="ctf_id" type="hidden" />
+                <div class="ctfr-form-grid">
+                  <div>
+                    <label for="ctfr-display">Display name</label>
+                    <input id="ctfr-display" name="display_name" type="text" maxlength="80" required="required" />
+                  </div>
+                  <div>
+                    <label for="ctfr-team">Team name</label>
+                    <input id="ctfr-team" name="team" type="text" maxlength="80" required="required" />
+                  </div>
+                  <div>
+                    <label for="ctfr-first">First name</label>
+                    <input id="ctfr-first" name="first_name" type="text" maxlength="80" />
+                  </div>
+                  <div>
+                    <label for="ctfr-last">Last name</label>
+                    <input id="ctfr-last" name="last_name" type="text" maxlength="80" />
+                  </div>
+                  <div class="ctfr-full">
+                    <label for="ctfr-email">Email (optional)</label>
+                    <input id="ctfr-email" name="email" type="email" maxlength="254" />
+                  </div>
+                </div>
+                <br/>
                 <button id="ctfr-submit" type="submit" class="btn btn-primary">Register</button>
               </form>
-            </section>
-          </div>
+            </div>
+          </section>
         </div>
       </html>
     </panel>
