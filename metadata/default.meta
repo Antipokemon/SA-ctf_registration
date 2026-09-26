@@ -9,3 +9,11 @@ export = none
 [views/admin]
 access = read : [ admin, ctf_admin, ctf_registration_admin ], write : [ admin, ctf_registration_admin ]
 export = none
+
+[storage/collections/data/ctf_events]
+access = read : [ * ], write : [ admin, ctf_registration_admin, ctf_registration_writer ]
+export = none
+
+[storage/collections/data/ctf_registrations]
+access = read : [ admin, ctf_admin, ctf_registration_admin, ctf_registration_writer ], write : [ admin, ctf_registration_admin, ctf_registration_writer ]
+export = none
