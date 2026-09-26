@@ -4,7 +4,7 @@ require([
 ], function($) {
     "use strict";
 
-    var base = "/en-US/splunkd/__raw/servicesNS/nobody/SA-ctf_registration/ctf_registration";
+    var base = "/en-US/splunkd/__raw/services/ctf_registration";
     var selectedId = null;
 
     function message(text, error) {
