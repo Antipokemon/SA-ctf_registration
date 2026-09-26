@@ -414,6 +414,7 @@ class RegistrationHandler(PersistentServerConnectionApplication):
 
         path = (request.get("path_info") or "").strip("/")
         method = (request.get("method") or "GET").upper()
+        logger.info("REST request method=%s path=%s", method, path)
 
         if path == "events" and method == "GET":
             return _json_response(self._events(request))
