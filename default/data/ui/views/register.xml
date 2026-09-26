@@ -1,0 +1,53 @@
+<dashboard version="1.1" script="registration.js" stylesheet="registration.css" hideEdit="true" theme="dark">
+  <label>CTF Registration</label>
+  <row>
+    <panel>
+      <html>
+        <div id="ctfr-root" class="ctfr-shell">
+          <div class="ctfr-hero">
+            <div>
+              <h1>CTF Registration</h1>
+              <p id="ctfr-event">Loading event information…</p>
+            </div>
+            <div id="ctfr-state" class="ctfr-badge">Loading</div>
+          </div>
+
+          <div id="ctfr-message" class="ctfr-message" style="display:none;"></div>
+
+          <div class="ctfr-grid">
+            <section class="ctfr-card">
+              <h2>Registration Window</h2>
+              <dl>
+                <dt>Opens</dt><dd id="ctfr-opens">—</dd>
+                <dt>Closes</dt><dd id="ctfr-closes">—</dd>
+                <dt>Splunk User</dt><dd id="ctfr-user">—</dd>
+              </dl>
+            </section>
+
+            <section class="ctfr-card">
+              <h2>Your Registration</h2>
+              <form id="ctfr-form">
+                <label for="ctfr-display">Display name</label>
+                <input id="ctfr-display" name="display_name" type="text" maxlength="80" required="required" />
+
+                <label for="ctfr-team">Team name</label>
+                <input id="ctfr-team" name="team" type="text" maxlength="80" required="required" />
+
+                <label for="ctfr-first">First name</label>
+                <input id="ctfr-first" name="first_name" type="text" maxlength="80" />
+
+                <label for="ctfr-last">Last name</label>
+                <input id="ctfr-last" name="last_name" type="text" maxlength="80" />
+
+                <label for="ctfr-email">Email (optional)</label>
+                <input id="ctfr-email" name="email" type="email" maxlength="254" />
+
+                <button id="ctfr-submit" type="submit" class="btn btn-primary">Register</button>
+              </form>
+            </section>
+          </div>
+        </div>
+      </html>
+    </panel>
+  </row>
+</dashboard>

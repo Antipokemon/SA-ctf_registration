@@ -1,0 +1,4 @@
+<nav search_view="search">
+  <view name="register" default="true" />
+  <view name="admin" />
+</nav>

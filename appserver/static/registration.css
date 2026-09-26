@@ -1,0 +1,24 @@
+.ctfr-shell { max-width: 1180px; margin: 0 auto; padding: 8px 12px 32px; }
+.ctfr-hero { display:flex; align-items:center; justify-content:space-between; gap:24px; margin-bottom:20px; }
+.ctfr-hero h1 { margin-bottom:4px; }
+.ctfr-badge { padding:8px 14px; border:1px solid currentColor; border-radius:999px; font-weight:700; letter-spacing:.04em; }
+.ctfr-grid { display:grid; grid-template-columns:minmax(280px, .8fr) minmax(360px, 1.2fr); gap:18px; }
+.ctfr-card { border:1px solid rgba(255,255,255,.18); border-radius:6px; padding:18px; background:rgba(255,255,255,.025); }
+.ctfr-card h2 { margin-top:0; }
+.ctfr-card label { display:block; font-weight:600; margin:12px 0 5px; }
+.ctfr-card input[type="text"], .ctfr-card input[type="email"] { box-sizing:border-box; width:100%; min-height:34px; padding:6px 8px; }
+.ctfr-card button { margin-top:16px; }
+.ctfr-card dl { display:grid; grid-template-columns:100px 1fr; gap:8px 14px; }
+.ctfr-card dt { font-weight:600; }
+.ctfr-card dd { margin:0; overflow-wrap:anywhere; }
+.ctfr-message { margin:0 0 18px; padding:12px 14px; border-left:4px solid currentColor; background:rgba(255,255,255,.04); }
+.ctfr-message.error { font-weight:600; }
+.ctfr-check { display:flex !important; align-items:center; gap:8px; font-weight:600; }
+.ctfr-check input { margin:0; }
+.ctfr-card-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.ctfr-card-heading h2 { margin:0; }
+.ctfr-card-heading button { margin:0; }
+.ctfr-roster-card { min-width:0; }
+.ctfr-table-wrap { overflow:auto; margin-top:12px; }
+.ctfr-table-wrap table { width:100%; }
+@media (max-width: 900px) { .ctfr-grid { grid-template-columns:1fr; } .ctfr-hero { align-items:flex-start; flex-direction:column; } }

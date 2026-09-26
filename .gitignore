@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+dist/
+local/registration_secrets.conf

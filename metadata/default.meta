@@ -1,0 +1,11 @@
+[]
+access = read : [ * ], write : [ admin, ctf_registration_admin ]
+export = system
+
+[views/register]
+access = read : [ * ], write : [ admin, ctf_registration_admin ]
+export = none
+
+[views/admin]
+access = read : [ admin, ctf_admin, ctf_registration_admin ], write : [ admin, ctf_registration_admin ]
+export = none
