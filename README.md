@@ -268,47 +268,31 @@ Investigate a simulated intrusion into Asteron Utilities' U.S. environment.
 
 This is shown when the participant opens the event details.
 
-### 5. Event image
+### 5. Image
 
-The admin page includes an image uploader. Enter the CTF ID first, then choose an image.
-
-Supported uploads:
+Place event images under:
 
 ```text
-PNG
-JPEG
-WebP
+appserver/static/images/
 ```
 
-Maximum upload size:
+Example:
 
 ```text
-5 MB
+appserver/static/images/asteron-easy.png
 ```
 
-Uploaded images are stored under:
+Use this value in the event:
 
 ```text
-appserver/static/images/uploads/
+/static/app/SA-ctf_registration/images/asteron-easy.png
 ```
 
-using the CTF ID as the filename. For example:
+If no custom image is supplied, use:
 
 ```text
-appserver/static/images/uploads/asteron-easy-2026.png
+/static/app/SA-ctf_registration/images/default-ctf.svg
 ```
-
-The app automatically sets the event image URL:
-
-```text
-/static/app/SA-ctf_registration/images/uploads/asteron-easy-2026.png
-```
-
-Uploading a new image for the same CTF ID replaces the previous uploaded image. SVG uploads are not accepted; the bundled default SVG can still be selected with **Use Default Image**.
-
-The advanced image URL/path field is still available for manually hosted images.
-
-> Uploaded images are runtime data. If your deployment replaces the entire app directory, preserve `appserver/static/images/uploads/` before replacing the app and restore it afterward.
 
 ### 6. Registration opens
 
@@ -571,19 +555,67 @@ python3 -m unittest discover -s tests -v
 - `SA-ctf_scoreboard` — participant questions, submissions, hints, and scoring views
 - `SA-ctf_scoreboard_admin` — administrator content and scoring management
 
+## Create a CTF and load questions, answers, and hints together
 
-## Image upload permissions
+Starting with version 1.3.0, **CTF Registration Admin** can create the event and load its scoreboard content in the same form.
 
-The Splunk process must be able to write to:
+Open:
 
 ```text
-$SPLUNK_HOME/etc/apps/SA-ctf_registration/appserver/static/images/uploads/
+/en-US/app/SA-ctf_registration/admin
 ```
 
-For the rootless Podman deployment:
+Select **New CTF**, configure the event, then optionally select all three CSV files:
 
-```bash
-podman exec -u splunk splunk   test -w /opt/splunk/etc/apps/SA-ctf_registration/appserver/static/images/uploads   && echo writable
+```text
+ctf_questions_staged.csv
+ctf_answers_staged.csv
+ctf_hints_staged.csv
 ```
 
-The backend creates the uploads directory if it does not already exist and the parent directory is writable.
+The files use the current multi-CTF schemas:
+
+```csv
+ctf_id,Number,Question,StartTime,EndTime,BasePoints,AdditionalBonusPoints,AdditionalBonusInstructions
+```
+
+```csv
+ctf_id,Number,Answer
+```
+
+```csv
+ctf_id,Number,HintNumber,Hint,HintCost
+```
+
+The `ctf_id` in every row must exactly match the CTF ID being created or edited.
+
+When all three files are selected and **Save CTF** is pressed, the registration backend validates the complete content set before writing it. It then writes:
+
+- questions to `SA-ctf_scoreboard / ctf_questions`
+- answers to `SA-ctf_scoreboard_admin / ctf_answers`
+- hints to `SA-ctf_scoreboard_admin / ctf_hints`
+
+For content replacement, existing rows for the same `ctf_id` are updated, new rows are added, and rows no longer present in the uploaded files are removed. Other CTFs are not changed.
+
+### Question scoring window
+
+By default, **Use the CTF event start/end as the scoring window for every imported question** is enabled. This removes the need to separately synchronize `StartTime` and `EndTime` values in the question CSV with the event form.
+
+Clear the checkbox only when the CSV intentionally contains different per-question scoring windows.
+
+### Permissions
+
+Creating/editing event metadata is available to the registration administrative roles. Importing questions/answers/hints additionally requires either:
+
+```text
+admin
+ctf_admin
+```
+
+This is intentional because answers and hints are protected CTF content.
+
+### Editing an existing CTF
+
+If no CSV files are selected while editing an event, existing questions, answers, and hints are left unchanged.
+
+If content is being replaced, select all three files. Partial content uploads are rejected.

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import configparser
 import json
 import logging
-import re
 import os
 import ssl
 import sys
@@ -22,6 +19,8 @@ BASE = Path(os.environ.get("SPLUNK_HOME", "/opt/splunk")) / "etc" / "apps" / APP
 BIN = BASE / "bin"
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
+
+from registration_content import parse_ctf_content
 
 from registration_core import (
     event_state,
@@ -47,11 +46,15 @@ SECRETS_CONFIG = BASE / "local" / "registration_secrets.conf"
 ADMIN_ROLES = {"admin", "ctf_admin", "ctf_registration_admin"}
 EVENTS_COLLECTION = "ctf_events"
 REGISTRATIONS_COLLECTION = "ctf_registrations"
+SCOREBOARD_APP = "SA-ctf_scoreboard"
+SCOREBOARD_ADMIN_APP = "SA-ctf_scoreboard_admin"
+CONTENT_ADMIN_ROLES = {"admin", "ctf_admin"}
 
-UPLOAD_DIR = BASE / "appserver" / "static" / "images" / "uploads"
-UPLOAD_URL_PREFIX = "/static/app/SA-ctf_registration/images/uploads"
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
-UPLOAD_CTF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+CONTENT_TARGETS = {
+    "questions": (SCOREBOARD_APP, "ctf_questions", ("Number",)),
+    "answers": (SCOREBOARD_ADMIN_APP, "ctf_answers", ("Number",)),
+    "hints": (SCOREBOARD_ADMIN_APP, "ctf_hints", ("Number", "HintNumber")),
+}
 
 
 def _json_response(payload, status=200):
@@ -171,6 +174,140 @@ def _kv_base(rest_uri, collection):
         + f"/servicesNS/nobody/{APP}/storage/collections/data/"
         + urllib.parse.quote(collection)
     )
+
+
+def _kv_base_for_app(rest_uri, app, collection):
+    return (
+        rest_uri.rstrip("/")
+        + f"/servicesNS/nobody/{app}/storage/collections/data/"
+        + urllib.parse.quote(collection)
+    )
+
+
+def _content_token(request):
+    return request["session"]["authtoken"]
+
+
+def _content_query(request, app, collection, query=None, limit=0):
+    params = {
+        "query": json.dumps(query or {}, separators=(",", ":")),
+        "limit": str(limit),
+    }
+    url = (
+        _kv_base_for_app(request["server"]["rest_uri"], app, collection)
+        + "?"
+        + urllib.parse.urlencode(params)
+    )
+    rows = _urlopen_json(url, token=_content_token(request))
+    return rows if isinstance(rows, list) else []
+
+
+def _content_save_batch(request, app, collection, documents):
+    if not documents:
+        return
+    base = _kv_base_for_app(request["server"]["rest_uri"], app, collection)
+    token = _content_token(request)
+    try:
+        _urlopen_json(
+            base + "/batch_save",
+            method="POST",
+            token=token,
+            data=documents,
+        )
+        return
+    except RuntimeError as exc:
+        logger.warning(
+            "KV batch_save failed app=%s collection=%s; falling back to row writes: %s",
+            app,
+            collection,
+            exc,
+        )
+
+    for document in documents:
+        key = document.get("_key")
+        if key:
+            _urlopen_json(
+                base + "/" + urllib.parse.quote(str(key), safe=""),
+                method="POST",
+                token=token,
+                data=document,
+            )
+        else:
+            _urlopen_json(base, method="POST", token=token, data=document)
+
+
+def _content_delete_key(request, app, collection, key):
+    _urlopen_json(
+        _kv_base_for_app(request["server"]["rest_uri"], app, collection)
+        + "/"
+        + urllib.parse.quote(str(key), safe=""),
+        method="DELETE",
+        token=_content_token(request),
+    )
+
+
+def _row_identity(row, fields):
+    return tuple(str(row.get(field, "")) for field in fields)
+
+
+def _replace_content_collection(request, ctf_id, app, collection, identity_fields, rows):
+    existing = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
+    existing_by_identity = {}
+    stale_keys = []
+    for row in existing:
+        identity = _row_identity(row, identity_fields)
+        if identity in existing_by_identity:
+            if row.get("_key"):
+                stale_keys.append(row["_key"])
+            continue
+        existing_by_identity[identity] = row
+
+    wanted = set()
+    documents = []
+    for row in rows:
+        document = dict(row)
+        identity = _row_identity(document, identity_fields)
+        wanted.add(identity)
+        old = existing_by_identity.get(identity)
+        if old and old.get("_key"):
+            document["_key"] = old["_key"]
+        documents.append(document)
+
+    for identity, row in existing_by_identity.items():
+        if identity not in wanted and row.get("_key"):
+            stale_keys.append(row["_key"])
+
+    _content_save_batch(request, app, collection, documents)
+    for key in stale_keys:
+        _content_delete_key(request, app, collection, key)
+
+
+def _snapshot_content(request, ctf_id):
+    snapshots = {}
+    for name, (app, collection, _identity_fields) in CONTENT_TARGETS.items():
+        snapshots[name] = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
+    return snapshots
+
+
+def _replace_ctf_content(request, ctf_id, content):
+    for name, (app, collection, identity_fields) in CONTENT_TARGETS.items():
+        _replace_content_collection(
+            request,
+            ctf_id,
+            app,
+            collection,
+            identity_fields,
+            content[name],
+        )
+
+
+def _restore_ctf_content(request, ctf_id, snapshots):
+    for name, (app, collection, identity_fields) in CONTENT_TARGETS.items():
+        rows = []
+        for old in snapshots.get(name, []):
+            row = {key: value for key, value in old.items() if key != "_key"}
+            rows.append(row)
+        _replace_content_collection(request, ctf_id, app, collection, identity_fields, rows)
 
 
 def _kv_query(request, general, collection, query=None, limit=0, sort=None):
@@ -328,68 +465,6 @@ def _public_event(event, registration=None):
     }
 
 
-def _detect_image_type(data):
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png", "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "jpg", "image/jpeg"
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp", "image/webp"
-    raise ValueError("Unsupported image type. Upload a PNG, JPEG, or WebP image.")
-
-
-def _decode_image_data(value):
-    raw = (value or "").strip()
-    if not raw:
-        raise ValueError("image_data is required")
-
-    if raw.startswith("data:"):
-        try:
-            header, raw = raw.split(",", 1)
-        except ValueError as exc:
-            raise ValueError("Invalid image data") from exc
-        if ";base64" not in header.lower():
-            raise ValueError("Uploaded image must use base64 encoding")
-
-    try:
-        data = base64.b64decode(raw, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError("Invalid base64 image data") from exc
-
-    if not data:
-        raise ValueError("Uploaded image is empty")
-    if len(data) > MAX_IMAGE_BYTES:
-        raise ValueError("Image exceeds the 5 MB upload limit")
-    return data
-
-
-def _save_event_image(ctf_id, image_data):
-    ctf_id = (ctf_id or "").strip().lower()
-    if not UPLOAD_CTF_ID_RE.fullmatch(ctf_id):
-        raise ValueError("Enter a valid CTF ID before uploading an image")
-
-    data = _decode_image_data(image_data)
-    extension, mime_type = _detect_image_type(data)
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-    for old_extension in ("png", "jpg", "jpeg", "webp"):
-        old = UPLOAD_DIR / f"{ctf_id}.{old_extension}"
-        if old.exists():
-            old.unlink()
-
-    destination = UPLOAD_DIR / f"{ctf_id}.{extension}"
-    temp = UPLOAD_DIR / f".{ctf_id}.{extension}.tmp"
-    temp.write_bytes(data)
-    os.replace(temp, destination)
-
-    return {
-        "image_url": f"{UPLOAD_URL_PREFIX}/{destination.name}",
-        "filename": destination.name,
-        "content_type": mime_type,
-        "size": len(data),
-    }
-
-
 class RegistrationHandler(PersistentServerConnectionApplication):
     def __init__(self, command_line, command_arg):
         PersistentServerConnectionApplication.__init__(self)
@@ -414,7 +489,6 @@ class RegistrationHandler(PersistentServerConnectionApplication):
 
         path = (request.get("path_info") or "").strip("/")
         method = (request.get("method") or "GET").upper()
-        logger.info("REST request method=%s path=%s", method, path)
 
         if path == "events" and method == "GET":
             return _json_response(self._events(request))
@@ -430,15 +504,22 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         if path == "admin/roster" and method == "GET":
             self._require_admin(request)
             return _json_response(self._admin_roster(request))
-        if path == "admin/upload-image" and method == "POST":
-            self._require_admin(request)
-            return _json_response(self._admin_upload_image(request))
 
         return _json_response({"message": "Not found"}, 404)
 
     def _require_admin(self, request):
         if not _is_admin(request["server"]["rest_uri"], request["session"]["authtoken"]):
             raise PermissionError("CTF registration administrator role is required")
+
+    def _require_content_admin(self, request):
+        roles = set(
+            _auth_context(
+                request["server"]["rest_uri"],
+                request["session"]["authtoken"],
+            ).get("roles", [])
+        )
+        if not roles.intersection(CONTENT_ADMIN_ROLES):
+            raise PermissionError("admin or ctf_admin role is required to import protected CTF content")
 
     def _events(self, request):
         general = _load_general()
@@ -546,29 +627,82 @@ class RegistrationHandler(PersistentServerConnectionApplication):
             values["participant_roles"] = general.get("default_participant_roles", "ctf_competitor")
 
         event = validate_event(values, allowed_roles=allowed_roles)
+
+        content_fields = ("questions_csv", "answers_csv", "hints_csv")
+        supplied = [bool(values.get(field, "").strip()) for field in content_fields]
+        content = None
+        snapshots = None
+        existing_event = _event_by_id(request, general, event["ctf_id"])
+
+        if any(supplied):
+            if not all(supplied):
+                raise ValueError("Questions, answers, and hints CSV files must all be supplied together")
+            self._require_content_admin(request)
+            content = parse_ctf_content(
+                event["ctf_id"],
+                values["questions_csv"],
+                values["answers_csv"],
+                values["hints_csv"],
+                event_starts=event["event_starts"],
+                event_ends=event["event_ends"],
+                use_event_window=parse_bool(values.get("use_event_window"), True),
+            )
+            # This is also a permission/app-availability preflight before the event is changed.
+            snapshots = _snapshot_content(request, event["ctf_id"])
+
         result = _upsert_event(request, general, event)
+        try:
+            if content is not None:
+                _replace_ctf_content(request, event["ctf_id"], content)
+        except Exception:
+            logger.exception("Content import failed; rolling back ctf_id=%s", event["ctf_id"])
+            try:
+                if snapshots is not None:
+                    _restore_ctf_content(request, event["ctf_id"], snapshots)
+                if existing_event and existing_event.get("_key"):
+                    _kv_update(
+                        request,
+                        general,
+                        EVENTS_COLLECTION,
+                        existing_event["_key"],
+                        existing_event,
+                    )
+                else:
+                    created = _event_by_id(request, general, event["ctf_id"])
+                    if created and created.get("_key"):
+                        token = _writer_token(request, general)
+                        _urlopen_json(
+                            _kv_base(request["server"]["rest_uri"], EVENTS_COLLECTION)
+                            + "/"
+                            + urllib.parse.quote(str(created["_key"]), safe=""),
+                            method="DELETE",
+                            token=token,
+                        )
+            except Exception:
+                logger.exception("Rollback failed for ctf_id=%s", event["ctf_id"])
+            raise
+
         logger.info(
-            "CTF event %s by=%s ctf_id=%s",
+            "CTF event %s by=%s ctf_id=%s content=%s",
             result,
             request["session"]["user"],
             event["ctf_id"],
+            content["counts"] if content else "unchanged",
         )
-        return {"message": "CTF event saved.", "result": result, "ctf_id": event["ctf_id"]}
-
-    def _admin_upload_image(self, request):
-        values = _pairs_to_dict(request.get("form"))
-        result = _save_event_image(
-            values.get("ctf_id", ""),
-            values.get("image_data", ""),
-        )
-        logger.info(
-            "CTF image uploaded by=%s ctf_id=%s file=%s size=%s",
-            request["session"]["user"],
-            values.get("ctf_id", ""),
-            result["filename"],
-            result["size"],
-        )
-        return {"message": "CTF image uploaded.", **result}
+        response = {
+            "message": "CTF event saved.",
+            "result": result,
+            "ctf_id": event["ctf_id"],
+        }
+        if content is not None:
+            response["content"] = content["counts"]
+            response["message"] = (
+                "CTF event and content saved: "
+                f"{content['counts']['questions']} questions, "
+                f"{content['counts']['answers']} answers, "
+                f"{content['counts']['hints']} hints."
+            )
+        return response
 
     def _admin_roster(self, request):
         general = _load_general()
