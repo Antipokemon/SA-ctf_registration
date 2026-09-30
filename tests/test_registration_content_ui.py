@@ -35,6 +35,16 @@ class RegistrationContentUiTests(unittest.TestCase):
         self.assertIn("Content verification failed", py)
         self.assertIn("Verified CTF content", py)
 
+    def test_registration_event_cards_are_compact_and_images_are_not_cropped(self):
+        js = (ROOT / "appserver" / "static" / "registration.js").read_text()
+        css = (ROOT / "appserver" / "static" / "registration.css").read_text()
+        self.assertIn('addClass("ctfr-event-card")', js)
+        self.assertIn('attr("tabindex", "0")', js)
+        self.assertIn('grid-template-columns:repeat(auto-fill,minmax(280px,360px))', css)
+        self.assertIn('object-fit:contain', css)
+        self.assertIn('aspect-ratio:16 / 9', css)
+        self.assertIn('.ctfr-event-card.is-selected', css)
+
 
 if __name__ == "__main__":
     unittest.main()

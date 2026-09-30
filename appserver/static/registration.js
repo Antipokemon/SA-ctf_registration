@@ -33,7 +33,12 @@ require([
         (data.events || []).forEach(function(event) {
             eventsById[event.ctf_id] = event;
 
-            var card = $("<article>").addClass("ctfr-event-card");
+            var card = $("<article>")
+                .addClass("ctfr-event-card")
+                .attr("data-ctf-id", event.ctf_id)
+                .attr("tabindex", "0")
+                .attr("role", "button")
+                .attr("aria-label", "Open " + (event.name || event.ctf_id));
             var image = $("<img>")
                 .addClass("ctfr-event-image")
                 .attr("alt", event.name || "CTF event")
@@ -44,13 +49,10 @@ require([
             $("<div>").addClass("ctfr-badge").text(badgeText(event)).appendTo(body);
             $("<h2>").text(event.name || event.ctf_id).appendTo(body);
             $("<p>").addClass("ctfr-short").text(event.short_description || "").appendTo(body);
-
-            var dates = $("<dl>").addClass("ctfr-event-dates");
-            $("<dt>").text("Registration").appendTo(dates);
-            $("<dd>").text(prettyTime(event.registration_opens) + " → " + prettyTime(event.registration_closes)).appendTo(dates);
-            $("<dt>").text("Event").appendTo(dates);
-            $("<dd>").text(prettyTime(event.event_starts) + " → " + prettyTime(event.event_ends)).appendTo(dates);
-            dates.appendTo(body);
+            $("<div>")
+                .addClass("ctfr-card-start")
+                .text("Starts " + prettyTime(event.event_starts))
+                .appendTo(body);
 
             var button = $("<button>")
                 .addClass("btn btn-primary")
@@ -72,8 +74,13 @@ require([
         var event = eventsById[ctfId];
         if (!event) { return; }
 
+        $(".ctfr-event-card").removeClass("is-selected");
+        $(".ctfr-event-card[data-ctf-id='" + event.ctf_id.replace(/'/g, "\'") + "']").addClass("is-selected");
         $("#ctfr-detail").show();
-        $("#ctfr-detail-image").attr("src", event.image_url || defaultImage);
+        $("#ctfr-detail-image")
+            .off("error.ctfrDetail")
+            .on("error.ctfrDetail", function() { $(this).attr("src", defaultImage); })
+            .attr("src", event.image_url || defaultImage);
         $("#ctfr-detail-name").text(event.name || event.ctf_id);
         $("#ctfr-detail-description").text(event.description || event.short_description || "");
         $("#ctfr-detail-registration-window").text(prettyTime(event.registration_opens) + " → " + prettyTime(event.registration_closes));
@@ -118,12 +125,25 @@ require([
             });
     }
 
-    $("#ctfr-events").on("click", "button[data-ctf-id]", function() {
+    $("#ctfr-events").on("click", "button[data-ctf-id]", function(event) {
+        event.stopPropagation();
         openEvent($(this).attr("data-ctf-id"));
+    });
+
+    $("#ctfr-events").on("click", ".ctfr-event-card[data-ctf-id]", function() {
+        openEvent($(this).attr("data-ctf-id"));
+    });
+
+    $("#ctfr-events").on("keydown", ".ctfr-event-card[data-ctf-id]", function(event) {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openEvent($(this).attr("data-ctf-id"));
+        }
     });
 
     $("#ctfr-detail-close").on("click", function() {
         $("#ctfr-detail").hide();
+        $(".ctfr-event-card").removeClass("is-selected");
     });
 
     $("#ctfr-form").on("submit", function(event) {

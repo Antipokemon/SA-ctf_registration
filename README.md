@@ -619,3 +619,7 @@ This is intentional because answers and hints are protected CTF content.
 If no CSV files are selected while editing an event, existing questions, answers, and hints are left unchanged.
 
 You may replace questions, answers, or hints independently. The backend validates the effective full set before writing anything. For example, replacing only the questions CSV succeeds only when the retained answers and hints still reference valid question numbers and every question still has an answer.
+
+## Participant event cards
+
+The participant registration page renders CTF events as compact cards instead of stretching a single event across the full page. Event artwork is displayed with `object-fit: contain` in a 16:9 frame so the complete image remains visible. Selecting a card opens the larger event-detail and registration panel below it.
