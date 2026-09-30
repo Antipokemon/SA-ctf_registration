@@ -145,43 +145,6 @@ require([
         loadRoster(selectedId);
     });
 
-    $("#ctfr-reset-run").on("click", function() {
-        if (!selectedId) {
-            message("Select a CTF before resetting it.", true);
-            return;
-        }
-        var warning =
-            "Reset " + selectedId + "?\n\n" +
-            "This clears registrations, hint purchases, and score events for this CTF. " +
-            "Questions, answers, hints, and the event definition are preserved.\n\n" +
-            "This action requires Splunk admin plus the built-in can_delete role.";
-        if (!window.confirm(warning)) { return; }
-
-        var typed = window.prompt("Type the CTF ID to confirm reset:", "");
-        if (typed !== selectedId) {
-            message("Reset cancelled: confirmation did not match " + selectedId + ".", true);
-            return;
-        }
-
-        var button = $(this);
-        button.prop("disabled", true).text("Resetting…");
-        $.ajax({
-            url: base + "/admin/reset-run",
-            method: "POST",
-            dataType: "json",
-            data: {ctf_id: selectedId, confirm_ctf_id: typed},
-            timeout: 120000
-        }).done(function(resp) {
-            message(resp.message || "CTF run reset.", false);
-            loadRoster(selectedId);
-        }).fail(function(xhr) {
-            var m = (xhr.responseJSON && xhr.responseJSON.message) || xhr.responseText || xhr.statusText;
-            message("Reset failed: " + m, true);
-        }).always(function() {
-            button.prop("disabled", false).text("Reset CTF Run");
-        });
-    });
-
     $("#ctfr-admin-form").on("submit", function(event) {
         event.preventDefault();
 
@@ -191,11 +154,6 @@ require([
             document.getElementById("ctfr-hints-csv").files.length > 0
         ];
         var anyFiles = selectedFiles.some(function(value) { return value; });
-        var allFiles = selectedFiles.every(function(value) { return value; });
-        if (anyFiles && !allFiles) {
-            message("Select questions, answers, and hints CSV files together, or leave all three blank.", true);
-            return;
-        }
 
         var button = $("#ctfr-save-event");
         button.prop("disabled", true).text(anyFiles ? "Saving CTF + Content…" : "Saving CTF…");
@@ -224,11 +182,9 @@ require([
                 use_event_window: $("#ctfr-use-event-window").is(":checked") ? "true" : "false"
             };
 
-            if (allFiles) {
-                payload.questions_csv = files[0];
-                payload.answers_csv = files[1];
-                payload.hints_csv = files[2];
-            }
+            if (selectedFiles[0]) { payload.questions_csv = files[0]; }
+            if (selectedFiles[1]) { payload.answers_csv = files[1]; }
+            if (selectedFiles[2]) { payload.hints_csv = files[2]; }
 
             return $.ajax({
                 url: base + "/admin/event",

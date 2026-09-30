@@ -90,34 +90,25 @@ def _require_ctf_id(row, expected_ctf_id, label):
         )
 
 
-def parse_ctf_content(
+def _strip_kv_metadata(rows):
+    cleaned = []
+    for row in rows or []:
+        cleaned.append({key: str(value) if value is not None else "" for key, value in row.items() if not key.startswith("_")})
+    return cleaned
+
+
+def parse_questions_csv(
     ctf_id,
-    questions_csv,
-    answers_csv,
-    hints_csv,
+    csv_text,
     *,
     event_starts,
     event_ends,
     use_event_window=True,
 ):
-    """Validate and normalize scoreboard content for one CTF.
-
-    The accepted files are the current multi-CTF staged formats.  The returned
-    rows are ready for the ctf_questions, ctf_answers, and ctf_hints KV stores.
-    """
-
     expected_ctf_id = str(ctf_id or "").strip().lower()
-    if not expected_ctf_id:
-        raise ValueError("ctf_id is required for content import")
-
-    qrows = _read_rows(questions_csv, "Questions", QUESTION_FIELDS)
-    arows = _read_rows(answers_csv, "Answers", ANSWER_FIELDS)
-    hrows = _read_rows(hints_csv, "Hints", HINT_FIELDS)
-
+    qrows = _read_rows(csv_text, "Questions", QUESTION_FIELDS)
     if not qrows:
         raise ValueError("Questions CSV contains no question rows")
-    if not arows:
-        raise ValueError("Answers CSV contains no answer rows")
 
     event_start_epoch = _iso_epoch(event_starts, "Event starts")
     event_end_epoch = _iso_epoch(event_ends, "Event ends")
@@ -165,6 +156,14 @@ def parse_ctf_content(
             "AdditionalBonusPoints": str(bonus_points),
             "AdditionalBonusInstructions": row.get("AdditionalBonusInstructions", "").strip(),
         })
+    return questions
+
+
+def parse_answers_csv(ctf_id, csv_text):
+    expected_ctf_id = str(ctf_id or "").strip().lower()
+    arows = _read_rows(csv_text, "Answers", ANSWER_FIELDS)
+    if not arows:
+        raise ValueError("Answers CSV contains no answer rows")
 
     answers = []
     answer_numbers = set()
@@ -174,8 +173,6 @@ def parse_ctf_content(
         number = _positive_int(row.get("Number"), "Number", row_number)
         if number in answer_numbers:
             raise ValueError(f"Duplicate answer Number {number}")
-        if number not in question_numbers:
-            raise ValueError(f"Answer Number {number} does not match a question")
         answer = row.get("Answer", "").strip()
         if not answer:
             raise ValueError(f"Answer is required at CSV row {row_number}")
@@ -185,12 +182,12 @@ def parse_ctf_content(
             "Number": str(number),
             "Answer": answer,
         })
+    return answers
 
-    missing_answers = sorted(question_numbers - answer_numbers)
-    if missing_answers:
-        preview = ", ".join(str(number) for number in missing_answers[:10])
-        suffix = "..." if len(missing_answers) > 10 else ""
-        raise ValueError(f"Question(s) missing answers: {preview}{suffix}")
+
+def parse_hints_csv(ctf_id, csv_text):
+    expected_ctf_id = str(ctf_id or "").strip().lower()
+    hrows = _read_rows(csv_text, "Hints", HINT_FIELDS)
 
     hints = []
     hint_keys = set()
@@ -199,8 +196,6 @@ def parse_ctf_content(
         row_number = row["_csv_row"]
         number = _positive_int(row.get("Number"), "Number", row_number)
         hint_number = _positive_int(row.get("HintNumber"), "HintNumber", row_number)
-        if number not in question_numbers:
-            raise ValueError(f"Hint for Number {number} does not match a question")
         key = (number, hint_number)
         if key in hint_keys:
             raise ValueError(f"Duplicate hint Number/HintNumber {number}/{hint_number}")
@@ -216,6 +211,54 @@ def parse_ctf_content(
             "Hint": hint,
             "HintCost": str(hint_cost),
         })
+    return hints
+
+
+def validate_content_relationships(questions, answers, hints):
+    question_numbers = {int(str(row.get("Number", "0"))) for row in questions}
+    answer_numbers = {int(str(row.get("Number", "0"))) for row in answers}
+
+    for number in sorted(answer_numbers - question_numbers):
+        raise ValueError(f"Answer Number {number} does not match a question")
+
+    missing_answers = sorted(question_numbers - answer_numbers)
+    if missing_answers:
+        preview = ", ".join(str(number) for number in missing_answers[:10])
+        suffix = "..." if len(missing_answers) > 10 else ""
+        raise ValueError(f"Question(s) missing answers: {preview}{suffix}")
+
+    for row in hints:
+        number = int(str(row.get("Number", "0")))
+        if number not in question_numbers:
+            raise ValueError(f"Hint for Number {number} does not match a question")
+
+
+def parse_ctf_content(
+    ctf_id,
+    questions_csv,
+    answers_csv,
+    hints_csv,
+    *,
+    event_starts,
+    event_ends,
+    use_event_window=True,
+):
+    """Validate and normalize a complete scoreboard content set for one CTF."""
+
+    expected_ctf_id = str(ctf_id or "").strip().lower()
+    if not expected_ctf_id:
+        raise ValueError("ctf_id is required for content import")
+
+    questions = parse_questions_csv(
+        expected_ctf_id,
+        questions_csv,
+        event_starts=event_starts,
+        event_ends=event_ends,
+        use_event_window=use_event_window,
+    )
+    answers = parse_answers_csv(expected_ctf_id, answers_csv)
+    hints = parse_hints_csv(expected_ctf_id, hints_csv)
+    validate_content_relationships(questions, answers, hints)
 
     return {
         "questions": questions,
@@ -226,4 +269,80 @@ def parse_ctf_content(
             "answers": len(answers),
             "hints": len(hints),
         },
+    }
+
+
+def parse_ctf_content_update(
+    ctf_id,
+    *,
+    questions_csv="",
+    answers_csv="",
+    hints_csv="",
+    existing_content=None,
+    event_starts,
+    event_ends,
+    use_event_window=True,
+):
+    """Validate an independent content update against the complete current CTF.
+
+    Any non-empty CSV replaces only that content type.  Content types without a
+    supplied CSV are retained from ``existing_content``.  Relationships are
+    validated against the resulting effective set before anything is written.
+    """
+
+    expected_ctf_id = str(ctf_id or "").strip().lower()
+    if not expected_ctf_id:
+        raise ValueError("ctf_id is required for content import")
+
+    existing = existing_content or {}
+    supplied = {
+        "questions": bool(str(questions_csv or "").strip()),
+        "answers": bool(str(answers_csv or "").strip()),
+        "hints": bool(str(hints_csv or "").strip()),
+    }
+    if not any(supplied.values()):
+        raise ValueError("At least one content CSV must be supplied")
+
+    effective = {
+        "questions": _strip_kv_metadata(existing.get("questions", [])),
+        "answers": _strip_kv_metadata(existing.get("answers", [])),
+        "hints": _strip_kv_metadata(existing.get("hints", [])),
+    }
+    updates = {}
+
+    if supplied["questions"]:
+        updates["questions"] = parse_questions_csv(
+            expected_ctf_id,
+            questions_csv,
+            event_starts=event_starts,
+            event_ends=event_ends,
+            use_event_window=use_event_window,
+        )
+        effective["questions"] = updates["questions"]
+
+    if supplied["answers"]:
+        updates["answers"] = parse_answers_csv(expected_ctf_id, answers_csv)
+        effective["answers"] = updates["answers"]
+
+    if supplied["hints"]:
+        updates["hints"] = parse_hints_csv(expected_ctf_id, hints_csv)
+        effective["hints"] = updates["hints"]
+
+    if not effective["questions"]:
+        raise ValueError("CTF content has no questions; upload a Questions CSV")
+    if not effective["answers"]:
+        raise ValueError("CTF content has no answers; upload an Answers CSV")
+
+    validate_content_relationships(
+        effective["questions"],
+        effective["answers"],
+        effective["hints"],
+    )
+
+    return {
+        "updates": updates,
+        "effective": effective,
+        "updated": list(updates.keys()),
+        "counts": {name: len(rows) for name, rows in effective.items()},
+        "updated_counts": {name: len(rows) for name, rows in updates.items()},
     }

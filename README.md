@@ -557,7 +557,7 @@ python3 -m unittest discover -s tests -v
 
 ## Create a CTF and load questions, answers, and hints together
 
-Starting with version 1.3.0, **CTF Registration Admin** can create the event and load its scoreboard content in the same form.
+Starting with version 1.3.0, **CTF Registration Admin** can create the event and load its scoreboard content in the same form. Version 1.3.1 adds independent content updates, so questions, answers, or hints can be replaced without re-uploading the other files.
 
 Open:
 
@@ -565,7 +565,7 @@ Open:
 /en-US/app/SA-ctf_registration/admin
 ```
 
-Select **New CTF**, configure the event, then optionally select all three CSV files:
+Select **New CTF** (or edit an existing event), configure the event, then optionally select any of these CSV files:
 
 ```text
 ctf_questions_staged.csv
@@ -589,15 +589,13 @@ ctf_id,Number,HintNumber,Hint,HintCost
 
 The `ctf_id` in every row must exactly match the CTF ID being created or edited.
 
-When all three files are selected and **Save CTF** is pressed, the registration backend validates the complete content set before writing it. It then writes:
+When one or more files are selected and **Save CTF** is pressed, the registration backend combines the uploaded files with the event's existing content, validates the resulting complete content set, and then replaces only the selected content types. It writes:
 
 - questions to `SA-ctf_scoreboard_admin / ctf_questions`
 - answers to `SA-ctf_scoreboard_admin / ctf_answers`
 - hints to `SA-ctf_scoreboard_admin / ctf_hints`
 
-For content replacement, existing rows for the same `ctf_id` are updated, new rows are added, and rows no longer present in the uploaded files are removed. Other CTFs are not changed.
-
-After an import, the registration backend re-reads all three collections from `SA-ctf_scoreboard_admin` and verifies the stored row counts. A missing or misrouted `ctf_questions` write now fails the Save CTF request instead of reporting a successful content import.
+For each selected content type, existing rows for the same `ctf_id` are updated, new rows are added, and rows no longer present in that uploaded file are removed. Content types without a selected file are retained unchanged. Other CTFs are not changed.
 
 ### Question scoring window
 
@@ -620,28 +618,4 @@ This is intentional because answers and hints are protected CTF content.
 
 If no CSV files are selected while editing an event, existing questions, answers, and hints are left unchanged.
 
-If content is being replaced, select all three files. Partial content uploads are rejected.
-
-## Reusing a CTF: reset participant state
-
-The registration admin page includes **Reset CTF Run** for an existing event. Reset keeps the reusable event content intact:
-
-```text
-ctf_events
-ctf_questions
-ctf_answers
-ctf_hints
-```
-
-and clears run-specific participant state:
-
-```text
-SA-ctf_registration / ctf_registrations
-SA-ctf_scoreboard / ctf_hint_entitlements
-index=scoreboard events for the ctf_id
-index=scoreboard_admin events for the ctf_id
-```
-
-The indexed score cleanup uses Splunk's `delete` search command, which hides matching events from search but does not immediately reclaim disk space. For safety the reset endpoint requires the Splunk `admin` role **and** the `delete_by_keyword` capability. The normal way to obtain that capability is to temporarily grant the administrator performing the reset the built-in `can_delete` role, perform the reset, then remove `can_delete` again.
-
-The reset deliberately does **not** remove participant roles from Splunk users because those users may be registered for another concurrent CTF. It also does not delete the questions, answers, hints, or event definition. After the indexed events are deleted, the registration app dispatches the admin app's `Generate Latest Scores and Ranks` saved search so `currentscore.csv` is rebuilt from the cleared score index; if that refresh fails, the next scheduled run will correct the cached ranking lookup.
+You may replace questions, answers, or hints independently. The backend validates the effective full set before writing anything. For example, replacing only the questions CSV succeeds only when the retained answers and hints still reference valid question numbers and every question still has an answer.

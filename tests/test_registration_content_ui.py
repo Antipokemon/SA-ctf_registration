@@ -14,37 +14,26 @@ class RegistrationContentUiTests(unittest.TestCase):
         self.assertIn('id="ctfr-hints-csv"', xml)
         self.assertIn('id="ctfr-use-event-window"', xml)
 
-    def test_javascript_submits_content_fields(self):
+    def test_javascript_submits_content_fields_independently(self):
         js = (ROOT / "appserver" / "static" / "registration_admin.js").read_text()
-        self.assertIn("payload.questions_csv", js)
-        self.assertIn("payload.answers_csv", js)
-        self.assertIn("payload.hints_csv", js)
+        self.assertIn("if (selectedFiles[0]) { payload.questions_csv = files[0]; }", js)
+        self.assertIn("if (selectedFiles[1]) { payload.answers_csv = files[1]; }", js)
+        self.assertIn("if (selectedFiles[2]) { payload.hints_csv = files[2]; }", js)
+        self.assertNotIn("Select questions, answers, and hints CSV files together", js)
         self.assertIn("use_event_window", js)
 
-    def test_backend_targets_expected_apps_and_collections(self):
+    def test_backend_targets_all_content_at_admin_app(self):
         py = (ROOT / "bin" / "registration_rest.py").read_text()
-        self.assertIn('SCOREBOARD_APP = "SA-ctf_scoreboard"', py)
         self.assertIn('SCOREBOARD_ADMIN_APP = "SA-ctf_scoreboard_admin"', py)
-        self.assertIn('"questions": (SCOREBOARD_ADMIN_APP, "ctf_questions"', py)
-        self.assertIn('"ctf_questions"', py)
-        self.assertIn('"ctf_answers"', py)
-        self.assertIn('"ctf_hints"', py)
-        self.assertIn('def _verify_ctf_content(', py)
-        self.assertIn('_verify_ctf_content(request, event["ctf_id"], content)', py)
-        self.assertIn('CTF content verification failed for', py)
+        self.assertIn('"questions": (SCOREBOARD_ADMIN_APP, "ctf_questions", ("Number",))', py)
+        self.assertIn('"answers": (SCOREBOARD_ADMIN_APP, "ctf_answers", ("Number",))', py)
+        self.assertIn('"hints": (SCOREBOARD_ADMIN_APP, "ctf_hints", ("Number", "HintNumber"))', py)
 
-    def test_admin_view_has_reset_run_action(self):
-        xml = (ROOT / "default" / "data" / "ui" / "views" / "admin.xml").read_text()
-        js = (ROOT / "appserver" / "static" / "registration_admin.js").read_text()
+    def test_backend_verifies_content_after_write(self):
         py = (ROOT / "bin" / "registration_rest.py").read_text()
-        self.assertIn('id="ctfr-reset-run"', xml)
-        self.assertIn('/admin/reset-run', js)
-        self.assertIn('path == "admin/reset-run"', py)
-        self.assertIn('delete_by_keyword', py)
-        self.assertIn('ctf_hint_entitlements', py)
-        self.assertIn('("scoreboard", "scoreboard_admin")', py)
-        self.assertIn('| delete', py)
-        self.assertIn('Generate Latest Scores and Ranks', py)
+        self.assertIn("def _verify_ctf_content", py)
+        self.assertIn("Content verification failed", py)
+        self.assertIn("Verified CTF content", py)
 
 
 if __name__ == "__main__":

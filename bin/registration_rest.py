@@ -20,7 +20,7 @@ BIN = BASE / "bin"
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 
-from registration_content import parse_ctf_content
+from registration_content import parse_ctf_content_update
 
 from registration_core import (
     event_state,
@@ -151,14 +151,7 @@ def _auth_context(rest_uri, token):
     roles = content.get("roles", [])
     if isinstance(roles, str):
         roles = [roles]
-    capabilities = content.get("capabilities", [])
-    if isinstance(capabilities, str):
-        capabilities = [capabilities]
-    return {
-        "roles": roles,
-        "capabilities": capabilities,
-        "username": entries[0].get("name"),
-    }
+    return {"roles": roles, "username": entries[0].get("name")}
 
 
 def _is_admin(rest_uri, token):
@@ -253,51 +246,6 @@ def _content_delete_key(request, app, collection, key):
     )
 
 
-def _run_export_search(request, search):
-    """Run a blocking Splunk search and discard its result stream."""
-    rest_uri = request["server"]["rest_uri"].rstrip("/")
-    body = urllib.parse.urlencode({"search": search, "output_mode": "json"}).encode("utf-8")
-    req = urllib.request.Request(
-        rest_uri + "/services/search/jobs/export",
-        data=body,
-        method="POST",
-    )
-    req.add_header("Authorization", "Splunk " + request["session"]["authtoken"])
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    context = ssl._create_unverified_context()
-    try:
-        with urllib.request.urlopen(req, context=context, timeout=120) as response:
-            response.read()
-    except urllib.error.HTTPError as exc:
-        content = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Splunk search returned HTTP {exc.code}: {content}") from exc
-
-
-def _delete_content_rows(request, app, collection, rows):
-    deleted = 0
-    for row in rows:
-        key = row.get("_key")
-        if key:
-            _content_delete_key(request, app, collection, key)
-            deleted += 1
-    return deleted
-
-
-def _dispatch_saved_search(request, app, name):
-    rest_uri = request["server"]["rest_uri"].rstrip("/")
-    url = (
-        rest_uri
-        + f"/servicesNS/nobody/{app}/saved/searches/"
-        + urllib.parse.quote(name, safe="")
-        + "/dispatch?output_mode=json"
-    )
-    req = urllib.request.Request(url, data=b"", method="POST")
-    req.add_header("Authorization", "Splunk " + request["session"]["authtoken"])
-    context = ssl._create_unverified_context()
-    with urllib.request.urlopen(req, context=context, timeout=30) as response:
-        response.read()
-
-
 def _row_identity(row, fields):
     return tuple(str(row.get(field, "")) for field in fields)
 
@@ -341,36 +289,44 @@ def _snapshot_content(request, ctf_id):
     return snapshots
 
 
-def _replace_ctf_content(request, ctf_id, content):
-    for name, (app, collection, identity_fields) in CONTENT_TARGETS.items():
+def _replace_ctf_content(request, ctf_id, updates):
+    for name, rows in updates.items():
+        app, collection, identity_fields = CONTENT_TARGETS[name]
         _replace_content_collection(
             request,
             ctf_id,
             app,
             collection,
             identity_fields,
-            content[name],
+            rows,
         )
 
 
-def _verify_ctf_content(request, ctf_id, content):
-    """Verify that every imported content collection persisted in its owner app."""
-    stored = {}
-    for name, (app, collection, _identity_fields) in CONTENT_TARGETS.items():
-        rows = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
-        expected = len(content[name])
-        actual = len(rows)
-        stored[name] = actual
-        if actual != expected:
+def _verify_ctf_content(request, ctf_id, effective_content):
+    actual_counts = {}
+    for name, expected_rows in effective_content.items():
+        app, collection, _identity_fields = CONTENT_TARGETS[name]
+        actual = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
+        actual_counts[name] = len(actual)
+        if len(actual) != len(expected_rows):
             raise RuntimeError(
-                f"CTF content verification failed for {name}: "
-                f"expected {expected} rows in {app}/{collection}, found {actual}"
+                f"Content verification failed for {name}: "
+                f"expected {len(expected_rows)} row(s), found {len(actual)}"
             )
-    return stored
+    logger.info(
+        "Verified CTF content ctf_id=%s questions=%s answers=%s hints=%s",
+        ctf_id,
+        actual_counts.get("questions", 0),
+        actual_counts.get("answers", 0),
+        actual_counts.get("hints", 0),
+    )
+    return actual_counts
 
 
-def _restore_ctf_content(request, ctf_id, snapshots):
-    for name, (app, collection, identity_fields) in CONTENT_TARGETS.items():
+def _restore_ctf_content(request, ctf_id, snapshots, names=None):
+    restore_names = names or CONTENT_TARGETS.keys()
+    for name in restore_names:
+        app, collection, identity_fields = CONTENT_TARGETS[name]
         rows = []
         for old in snapshots.get(name, []):
             row = {key: value for key, value in old.items() if key != "_key"}
@@ -572,9 +528,6 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         if path == "admin/roster" and method == "GET":
             self._require_admin(request)
             return _json_response(self._admin_roster(request))
-        if path == "admin/reset-run" and method == "POST":
-            self._require_admin(request)
-            return _json_response(self._admin_reset_run(request))
 
         return _json_response({"message": "Not found"}, 404)
 
@@ -591,21 +544,6 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         )
         if not roles.intersection(CONTENT_ADMIN_ROLES):
             raise PermissionError("admin or ctf_admin role is required to import protected CTF content")
-
-    def _require_reset_admin(self, request):
-        context = _auth_context(
-            request["server"]["rest_uri"],
-            request["session"]["authtoken"],
-        )
-        roles = set(context.get("roles", []))
-        capabilities = set(context.get("capabilities", []))
-        if "admin" not in roles:
-            raise PermissionError("Splunk admin role is required to reset a CTF run")
-        if "delete_by_keyword" not in capabilities:
-            raise PermissionError(
-                "Resetting score events requires the delete_by_keyword capability; "
-                "temporarily assign the built-in can_delete role to the administrator performing the reset"
-            )
 
     def _events(self, request):
         general = _load_general()
@@ -715,45 +653,46 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         event = validate_event(values, allowed_roles=allowed_roles)
 
         content_fields = ("questions_csv", "answers_csv", "hints_csv")
-        supplied = [bool(values.get(field, "").strip()) for field in content_fields]
+        supplied = {
+            "questions": bool(values.get("questions_csv", "").strip()),
+            "answers": bool(values.get("answers_csv", "").strip()),
+            "hints": bool(values.get("hints_csv", "").strip()),
+        }
         content = None
         snapshots = None
         existing_event = _event_by_id(request, general, event["ctf_id"])
 
-        if any(supplied):
-            if not all(supplied):
-                raise ValueError("Questions, answers, and hints CSV files must all be supplied together")
+        if any(supplied.values()):
             self._require_content_admin(request)
-            content = parse_ctf_content(
+            # Snapshot all three content collections so a partial update can be
+            # validated against the content that is being retained.
+            snapshots = _snapshot_content(request, event["ctf_id"])
+            content = parse_ctf_content_update(
                 event["ctf_id"],
-                values["questions_csv"],
-                values["answers_csv"],
-                values["hints_csv"],
+                questions_csv=values.get("questions_csv", ""),
+                answers_csv=values.get("answers_csv", ""),
+                hints_csv=values.get("hints_csv", ""),
+                existing_content=snapshots,
                 event_starts=event["event_starts"],
                 event_ends=event["event_ends"],
                 use_event_window=parse_bool(values.get("use_event_window"), True),
             )
-            # This is also a permission/app-availability preflight before the event is changed.
-            snapshots = _snapshot_content(request, event["ctf_id"])
 
         result = _upsert_event(request, general, event)
         try:
             if content is not None:
-                _replace_ctf_content(request, event["ctf_id"], content)
-                stored_counts = _verify_ctf_content(request, event["ctf_id"], content)
-                logger.info(
-                    "Verified CTF content ctf_id=%s app=%s questions=%s answers=%s hints=%s",
-                    event["ctf_id"],
-                    SCOREBOARD_ADMIN_APP,
-                    stored_counts["questions"],
-                    stored_counts["answers"],
-                    stored_counts["hints"],
-                )
+                _replace_ctf_content(request, event["ctf_id"], content["updates"])
+                _verify_ctf_content(request, event["ctf_id"], content["effective"])
         except Exception:
             logger.exception("Content import failed; rolling back ctf_id=%s", event["ctf_id"])
             try:
-                if snapshots is not None:
-                    _restore_ctf_content(request, event["ctf_id"], snapshots)
+                if snapshots is not None and content is not None:
+                    _restore_ctf_content(
+                        request,
+                        event["ctf_id"],
+                        snapshots,
+                        names=content["updated"],
+                    )
                 if existing_event and existing_event.get("_key"):
                     _kv_update(
                         request,
@@ -782,7 +721,7 @@ class RegistrationHandler(PersistentServerConnectionApplication):
             result,
             request["session"]["user"],
             event["ctf_id"],
-            content["counts"] if content else "unchanged",
+            content["updated_counts"] if content else "unchanged",
         )
         response = {
             "message": "CTF event saved.",
@@ -791,91 +730,17 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         }
         if content is not None:
             response["content"] = content["counts"]
+            response["updated_content"] = content["updated_counts"]
+            updated = ", ".join(
+                f"{name}={content['updated_counts'][name]}" for name in content["updated"]
+            )
             response["message"] = (
-                "CTF event and content saved: "
-                f"{content['counts']['questions']} questions, "
+                f"CTF event saved; updated {updated}. "
+                f"Current content: {content['counts']['questions']} questions, "
                 f"{content['counts']['answers']} answers, "
                 f"{content['counts']['hints']} hints."
             )
         return response
-
-    def _admin_reset_run(self, request):
-        self._require_reset_admin(request)
-        general = _load_general()
-        values = _pairs_to_dict(request.get("form"))
-        ctf_id = values.get("ctf_id", "").strip().lower()
-        confirm = values.get("confirm_ctf_id", "").strip().lower()
-        if not ctf_id or confirm != ctf_id:
-            raise ValueError("Reset confirmation must exactly match ctf_id")
-
-        event = _event_by_id(request, general, ctf_id)
-        if not event:
-            raise ValueError("CTF event was not found")
-
-        # Preflight the KV Store reads before deleting any indexed score events.
-        registrations = _kv_query(
-            request, general, REGISTRATIONS_COLLECTION, {"ctf_id": ctf_id}, limit=0
-        )
-        hint_entitlements = _content_query(
-            request, SCOREBOARD_APP, "ctf_hint_entitlements", {"ctf_id": ctf_id}, limit=0
-        )
-
-        # Splunk's delete command marks matching events as deleted from search.
-        # It does not immediately reclaim index disk space, which is fine for
-        # resetting a reusable CTF while retaining content and the event definition.
-        for index in ("scoreboard", "scoreboard_admin"):
-            _run_export_search(
-                request,
-                f'search index={index} ctf_id="{ctf_id}" | delete',
-            )
-
-        registration_deleted = 0
-        token = _writer_token(request, general)
-        for row in registrations:
-            key = row.get("_key")
-            if not key:
-                continue
-            _urlopen_json(
-                _kv_base(request["server"]["rest_uri"], REGISTRATIONS_COLLECTION)
-                + "/"
-                + urllib.parse.quote(str(key), safe=""),
-                method="DELETE",
-                token=token,
-            )
-            registration_deleted += 1
-
-        hints_deleted = _delete_content_rows(
-            request, SCOREBOARD_APP, "ctf_hint_entitlements", hint_entitlements
-        )
-
-        try:
-            _dispatch_saved_search(
-                request, SCOREBOARD_ADMIN_APP, "Generate Latest Scores and Ranks"
-            )
-        except Exception as exc:
-            # Score events are already reset; a stale cached rank lookup is less
-            # important than failing the entire reset. The next scheduled run
-            # will rebuild currentscore.csv from the now-clean scoreboard index.
-            logger.warning("Unable to refresh currentscore.csv after reset: %s", exc)
-
-        logger.warning(
-            "CTF run reset by=%s ctf_id=%s registrations=%s hint_entitlements=%s",
-            request["session"]["user"],
-            ctf_id,
-            registration_deleted,
-            hints_deleted,
-        )
-        return {
-            "message": (
-                f"Reset {ctf_id}: score events hidden, "
-                f"{registration_deleted} registrations removed, "
-                f"{hints_deleted} hint entitlements removed. "
-                "Questions, answers, hints, and the CTF event were preserved."
-            ),
-            "ctf_id": ctf_id,
-            "registrations_deleted": registration_deleted,
-            "hint_entitlements_deleted": hints_deleted,
-        }
 
     def _admin_roster(self, request):
         general = _load_general()

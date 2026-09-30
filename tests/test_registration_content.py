@@ -5,7 +5,7 @@ import unittest
 HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..", "bin")))
 
-from registration_content import parse_ctf_content
+from registration_content import parse_ctf_content, parse_ctf_content_update
 
 
 CTF_ID = "asteron-easy-2026"
@@ -92,6 +92,64 @@ class RegistrationContentTests(unittest.TestCase):
         bad = "ctf_id,Number,Question\nasteron-easy-2026,1,What host?\n"
         with self.assertRaisesRegex(ValueError, "missing required column"):
             self.parse(questions_csv=bad)
+
+    def test_partial_question_update_uses_existing_answers_and_hints(self):
+        existing = self.parse()
+        updated_questions = questions([
+            f'{CTF_ID},1,"Updated host question?",1,2,100,0,""',
+            f'{CTF_ID},2,"Updated IP question?",3,4,80,0,""',
+        ])
+        content = parse_ctf_content_update(
+            CTF_ID,
+            questions_csv=updated_questions,
+            existing_content=existing,
+            event_starts=START,
+            event_ends=END,
+            use_event_window=True,
+        )
+        self.assertEqual(content["updated"], ["questions"])
+        self.assertEqual(content["updated_counts"], {"questions": 2})
+        self.assertEqual(content["counts"], {"questions": 2, "answers": 2, "hints": 2})
+        self.assertEqual(content["effective"]["questions"][0]["Question"], "Updated host question?")
+        self.assertEqual(content["effective"]["answers"][0]["Answer"], "WEB-01")
+
+    def test_partial_question_update_rejects_orphaned_existing_answer(self):
+        existing = self.parse()
+        updated_questions = questions([f'{CTF_ID},1,"Only one?",1,2,100,0,""'])
+        with self.assertRaisesRegex(ValueError, "Answer Number 2 does not match a question"):
+            parse_ctf_content_update(
+                CTF_ID,
+                questions_csv=updated_questions,
+                existing_content=existing,
+                event_starts=START,
+                event_ends=END,
+                use_event_window=True,
+            )
+
+    def test_partial_hint_update_can_clear_hints(self):
+        existing = self.parse()
+        empty_hints = "ctf_id,Number,HintNumber,Hint,HintCost\n"
+        content = parse_ctf_content_update(
+            CTF_ID,
+            hints_csv=empty_hints,
+            existing_content=existing,
+            event_starts=START,
+            event_ends=END,
+            use_event_window=True,
+        )
+        self.assertEqual(content["updated"], ["hints"])
+        self.assertEqual(content["counts"]["hints"], 0)
+
+    def test_partial_update_requires_existing_complete_content(self):
+        with self.assertRaisesRegex(ValueError, "no answers"):
+            parse_ctf_content_update(
+                CTF_ID,
+                questions_csv=questions(),
+                existing_content={},
+                event_starts=START,
+                event_ends=END,
+                use_event_window=True,
+            )
 
 
 if __name__ == "__main__":
