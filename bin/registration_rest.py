@@ -548,20 +548,22 @@ class RegistrationHandler(PersistentServerConnectionApplication):
     def _events(self, request):
         general = _load_general()
         username = request["session"]["user"]
+        query = _pairs_to_dict(request.get("query"))
+        include_completed = parse_bool(query.get("include_completed"), False)
         events = _kv_query(request, general, EVENTS_COLLECTION, {}, limit=0)
         result = []
 
         for event in events:
             try:
                 evt_state = event_state(event)
-                if evt_state == "COMPLETED":
-                    continue
                 registration = _registration_by_user(
                     request,
                     general,
                     event.get("ctf_id", ""),
                     username,
                 )
+                if evt_state == "COMPLETED" and not (include_completed and registration):
+                    continue
                 result.append(_public_event(event, registration))
             except ValueError as exc:
                 logger.warning("Skipping invalid event %s: %s", event.get("ctf_id"), exc)

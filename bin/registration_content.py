@@ -17,6 +17,7 @@ QUESTION_FIELDS = [
 ]
 ANSWER_FIELDS = ["ctf_id", "Number", "Answer"]
 HINT_FIELDS = ["ctf_id", "Number", "HintNumber", "Hint", "HintCost"]
+OPTIONAL_QUESTION_FIELDS = ["Subject", "Category", "ChallengeID"]
 
 
 def _clean_csv_text(text):
@@ -146,7 +147,10 @@ def parse_questions_csv(
             if end_time <= start_time:
                 raise ValueError(f"EndTime must be later than StartTime at CSV row {row_number}")
 
-        questions.append({
+        subject = row.get("Subject", "").strip() or row.get("Category", "").strip()
+        challenge_id = row.get("ChallengeID", "").strip()
+
+        document = {
             "ctf_id": expected_ctf_id,
             "Number": str(number),
             "Question": question,
@@ -155,7 +159,16 @@ def parse_questions_csv(
             "BasePoints": str(base_points),
             "AdditionalBonusPoints": str(bonus_points),
             "AdditionalBonusInstructions": row.get("AdditionalBonusInstructions", "").strip(),
-        })
+        }
+        if subject:
+            # Subject is the canonical grouping field. Category is also written for
+            # backward compatibility with older scoreboard searches.
+            document["Subject"] = subject
+            document["Category"] = subject
+        if challenge_id:
+            document["ChallengeID"] = challenge_id
+
+        questions.append(document)
     return questions
 
 
