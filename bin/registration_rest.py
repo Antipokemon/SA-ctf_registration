@@ -353,6 +353,22 @@ def _replace_ctf_content(request, ctf_id, content):
         )
 
 
+def _verify_ctf_content(request, ctf_id, content):
+    """Verify that every imported content collection persisted in its owner app."""
+    stored = {}
+    for name, (app, collection, _identity_fields) in CONTENT_TARGETS.items():
+        rows = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
+        expected = len(content[name])
+        actual = len(rows)
+        stored[name] = actual
+        if actual != expected:
+            raise RuntimeError(
+                f"CTF content verification failed for {name}: "
+                f"expected {expected} rows in {app}/{collection}, found {actual}"
+            )
+    return stored
+
+
 def _restore_ctf_content(request, ctf_id, snapshots):
     for name, (app, collection, identity_fields) in CONTENT_TARGETS.items():
         rows = []
@@ -724,6 +740,15 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         try:
             if content is not None:
                 _replace_ctf_content(request, event["ctf_id"], content)
+                stored_counts = _verify_ctf_content(request, event["ctf_id"], content)
+                logger.info(
+                    "Verified CTF content ctf_id=%s app=%s questions=%s answers=%s hints=%s",
+                    event["ctf_id"],
+                    SCOREBOARD_ADMIN_APP,
+                    stored_counts["questions"],
+                    stored_counts["answers"],
+                    stored_counts["hints"],
+                )
         except Exception:
             logger.exception("Content import failed; rolling back ctf_id=%s", event["ctf_id"])
             try:

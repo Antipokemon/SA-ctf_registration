@@ -29,6 +29,9 @@ class RegistrationContentUiTests(unittest.TestCase):
         self.assertIn('"ctf_questions"', py)
         self.assertIn('"ctf_answers"', py)
         self.assertIn('"ctf_hints"', py)
+        self.assertIn('def _verify_ctf_content(', py)
+        self.assertIn('_verify_ctf_content(request, event["ctf_id"], content)', py)
+        self.assertIn('CTF content verification failed for', py)
 
     def test_admin_view_has_reset_run_action(self):
         xml = (ROOT / "default" / "data" / "ui" / "views" / "admin.xml").read_text()

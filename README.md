@@ -597,6 +597,8 @@ When all three files are selected and **Save CTF** is pressed, the registration 
 
 For content replacement, existing rows for the same `ctf_id` are updated, new rows are added, and rows no longer present in the uploaded files are removed. Other CTFs are not changed.
 
+After an import, the registration backend re-reads all three collections from `SA-ctf_scoreboard_admin` and verifies the stored row counts. A missing or misrouted `ctf_questions` write now fails the Save CTF request instead of reporting a successful content import.
+
 ### Question scoring window
 
 By default, **Use the CTF event start/end as the scoring window for every imported question** is enabled. This removes the need to separately synchronize `StartTime` and `EndTime` values in the question CSV with the event form.
