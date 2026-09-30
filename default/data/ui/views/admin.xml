@@ -99,8 +99,12 @@
           <section id="ctfr-roster-panel" class="ctfr-card ctfr-roster-panel" style="display:none;">
             <div class="ctfr-card-heading">
               <h2>Selected CTF Roster</h2>
-              <button id="ctfr-refresh-roster" type="button" class="btn">Refresh</button>
+              <div class="ctfr-actions">
+                <button id="ctfr-refresh-roster" type="button" class="btn">Refresh</button>
+                <button id="ctfr-reset-run" type="button" class="btn btn-danger">Reset CTF Run</button>
+              </div>
             </div>
+            <p class="ctfr-help">Reset preserves the event and its questions/answers/hints, but clears registrations, hint purchases, and score events for this CTF ID. Requires Splunk admin plus the built-in can_delete role.</p>
             <div id="ctfr-roster-summary">Loading…</div>
             <div class="ctfr-table-wrap">
               <table class="table table-striped" id="ctfr-roster-table">

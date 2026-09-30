@@ -591,7 +591,7 @@ The `ctf_id` in every row must exactly match the CTF ID being created or edited.
 
 When all three files are selected and **Save CTF** is pressed, the registration backend validates the complete content set before writing it. It then writes:
 
-- questions to `SA-ctf_scoreboard / ctf_questions`
+- questions to `SA-ctf_scoreboard_admin / ctf_questions`
 - answers to `SA-ctf_scoreboard_admin / ctf_answers`
 - hints to `SA-ctf_scoreboard_admin / ctf_hints`
 
@@ -619,3 +619,27 @@ This is intentional because answers and hints are protected CTF content.
 If no CSV files are selected while editing an event, existing questions, answers, and hints are left unchanged.
 
 If content is being replaced, select all three files. Partial content uploads are rejected.
+
+## Reusing a CTF: reset participant state
+
+The registration admin page includes **Reset CTF Run** for an existing event. Reset keeps the reusable event content intact:
+
+```text
+ctf_events
+ctf_questions
+ctf_answers
+ctf_hints
+```
+
+and clears run-specific participant state:
+
+```text
+SA-ctf_registration / ctf_registrations
+SA-ctf_scoreboard / ctf_hint_entitlements
+index=scoreboard events for the ctf_id
+index=scoreboard_admin events for the ctf_id
+```
+
+The indexed score cleanup uses Splunk's `delete` search command, which hides matching events from search but does not immediately reclaim disk space. For safety the reset endpoint requires the Splunk `admin` role **and** the `delete_by_keyword` capability. The normal way to obtain that capability is to temporarily grant the administrator performing the reset the built-in `can_delete` role, perform the reset, then remove `can_delete` again.
+
+The reset deliberately does **not** remove participant roles from Splunk users because those users may be registered for another concurrent CTF. It also does not delete the questions, answers, hints, or event definition. After the indexed events are deleted, the registration app dispatches the admin app's `Generate Latest Scores and Ranks` saved search so `currentscore.csv` is rebuilt from the cleared score index; if that refresh fails, the next scheduled run will correct the cached ranking lookup.

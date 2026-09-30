@@ -1,5 +1,5 @@
 APP=SA-ctf_registration
-VERSION=1.0.0
+VERSION=1.3.1
 DIST=dist
 
 .PHONY: test validate package clean
@@ -8,7 +8,7 @@ test:
 	python3 -m unittest discover -s tests -v
 
 validate:
-	python3 -m py_compile bin/registration_core.py bin/registration_rest.py
+	python3 -m py_compile bin/registration_core.py bin/registration_content.py bin/registration_rest.py
 	python3 -m unittest discover -s tests -v
 
 package: validate

@@ -145,6 +145,43 @@ require([
         loadRoster(selectedId);
     });
 
+    $("#ctfr-reset-run").on("click", function() {
+        if (!selectedId) {
+            message("Select a CTF before resetting it.", true);
+            return;
+        }
+        var warning =
+            "Reset " + selectedId + "?\n\n" +
+            "This clears registrations, hint purchases, and score events for this CTF. " +
+            "Questions, answers, hints, and the event definition are preserved.\n\n" +
+            "This action requires Splunk admin plus the built-in can_delete role.";
+        if (!window.confirm(warning)) { return; }
+
+        var typed = window.prompt("Type the CTF ID to confirm reset:", "");
+        if (typed !== selectedId) {
+            message("Reset cancelled: confirmation did not match " + selectedId + ".", true);
+            return;
+        }
+
+        var button = $(this);
+        button.prop("disabled", true).text("Resetting…");
+        $.ajax({
+            url: base + "/admin/reset-run",
+            method: "POST",
+            dataType: "json",
+            data: {ctf_id: selectedId, confirm_ctf_id: typed},
+            timeout: 120000
+        }).done(function(resp) {
+            message(resp.message || "CTF run reset.", false);
+            loadRoster(selectedId);
+        }).fail(function(xhr) {
+            var m = (xhr.responseJSON && xhr.responseJSON.message) || xhr.responseText || xhr.statusText;
+            message("Reset failed: " + m, true);
+        }).always(function() {
+            button.prop("disabled", false).text("Reset CTF Run");
+        });
+    });
+
     $("#ctfr-admin-form").on("submit", function(event) {
         event.preventDefault();
 

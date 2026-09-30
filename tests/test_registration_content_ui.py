@@ -25,9 +25,23 @@ class RegistrationContentUiTests(unittest.TestCase):
         py = (ROOT / "bin" / "registration_rest.py").read_text()
         self.assertIn('SCOREBOARD_APP = "SA-ctf_scoreboard"', py)
         self.assertIn('SCOREBOARD_ADMIN_APP = "SA-ctf_scoreboard_admin"', py)
+        self.assertIn('"questions": (SCOREBOARD_ADMIN_APP, "ctf_questions"', py)
         self.assertIn('"ctf_questions"', py)
         self.assertIn('"ctf_answers"', py)
         self.assertIn('"ctf_hints"', py)
+
+    def test_admin_view_has_reset_run_action(self):
+        xml = (ROOT / "default" / "data" / "ui" / "views" / "admin.xml").read_text()
+        js = (ROOT / "appserver" / "static" / "registration_admin.js").read_text()
+        py = (ROOT / "bin" / "registration_rest.py").read_text()
+        self.assertIn('id="ctfr-reset-run"', xml)
+        self.assertIn('/admin/reset-run', js)
+        self.assertIn('path == "admin/reset-run"', py)
+        self.assertIn('delete_by_keyword', py)
+        self.assertIn('ctf_hint_entitlements', py)
+        self.assertIn('("scoreboard", "scoreboard_admin")', py)
+        self.assertIn('| delete', py)
+        self.assertIn('Generate Latest Scores and Ranks', py)
 
 
 if __name__ == "__main__":

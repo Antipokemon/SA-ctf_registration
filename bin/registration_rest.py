@@ -51,7 +51,7 @@ SCOREBOARD_ADMIN_APP = "SA-ctf_scoreboard_admin"
 CONTENT_ADMIN_ROLES = {"admin", "ctf_admin"}
 
 CONTENT_TARGETS = {
-    "questions": (SCOREBOARD_APP, "ctf_questions", ("Number",)),
+    "questions": (SCOREBOARD_ADMIN_APP, "ctf_questions", ("Number",)),
     "answers": (SCOREBOARD_ADMIN_APP, "ctf_answers", ("Number",)),
     "hints": (SCOREBOARD_ADMIN_APP, "ctf_hints", ("Number", "HintNumber")),
 }
@@ -151,7 +151,14 @@ def _auth_context(rest_uri, token):
     roles = content.get("roles", [])
     if isinstance(roles, str):
         roles = [roles]
-    return {"roles": roles, "username": entries[0].get("name")}
+    capabilities = content.get("capabilities", [])
+    if isinstance(capabilities, str):
+        capabilities = [capabilities]
+    return {
+        "roles": roles,
+        "capabilities": capabilities,
+        "username": entries[0].get("name"),
+    }
 
 
 def _is_admin(rest_uri, token):
@@ -244,6 +251,51 @@ def _content_delete_key(request, app, collection, key):
         method="DELETE",
         token=_content_token(request),
     )
+
+
+def _run_export_search(request, search):
+    """Run a blocking Splunk search and discard its result stream."""
+    rest_uri = request["server"]["rest_uri"].rstrip("/")
+    body = urllib.parse.urlencode({"search": search, "output_mode": "json"}).encode("utf-8")
+    req = urllib.request.Request(
+        rest_uri + "/services/search/jobs/export",
+        data=body,
+        method="POST",
+    )
+    req.add_header("Authorization", "Splunk " + request["session"]["authtoken"])
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    context = ssl._create_unverified_context()
+    try:
+        with urllib.request.urlopen(req, context=context, timeout=120) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        content = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Splunk search returned HTTP {exc.code}: {content}") from exc
+
+
+def _delete_content_rows(request, app, collection, rows):
+    deleted = 0
+    for row in rows:
+        key = row.get("_key")
+        if key:
+            _content_delete_key(request, app, collection, key)
+            deleted += 1
+    return deleted
+
+
+def _dispatch_saved_search(request, app, name):
+    rest_uri = request["server"]["rest_uri"].rstrip("/")
+    url = (
+        rest_uri
+        + f"/servicesNS/nobody/{app}/saved/searches/"
+        + urllib.parse.quote(name, safe="")
+        + "/dispatch?output_mode=json"
+    )
+    req = urllib.request.Request(url, data=b"", method="POST")
+    req.add_header("Authorization", "Splunk " + request["session"]["authtoken"])
+    context = ssl._create_unverified_context()
+    with urllib.request.urlopen(req, context=context, timeout=30) as response:
+        response.read()
 
 
 def _row_identity(row, fields):
@@ -504,6 +556,9 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         if path == "admin/roster" and method == "GET":
             self._require_admin(request)
             return _json_response(self._admin_roster(request))
+        if path == "admin/reset-run" and method == "POST":
+            self._require_admin(request)
+            return _json_response(self._admin_reset_run(request))
 
         return _json_response({"message": "Not found"}, 404)
 
@@ -520,6 +575,21 @@ class RegistrationHandler(PersistentServerConnectionApplication):
         )
         if not roles.intersection(CONTENT_ADMIN_ROLES):
             raise PermissionError("admin or ctf_admin role is required to import protected CTF content")
+
+    def _require_reset_admin(self, request):
+        context = _auth_context(
+            request["server"]["rest_uri"],
+            request["session"]["authtoken"],
+        )
+        roles = set(context.get("roles", []))
+        capabilities = set(context.get("capabilities", []))
+        if "admin" not in roles:
+            raise PermissionError("Splunk admin role is required to reset a CTF run")
+        if "delete_by_keyword" not in capabilities:
+            raise PermissionError(
+                "Resetting score events requires the delete_by_keyword capability; "
+                "temporarily assign the built-in can_delete role to the administrator performing the reset"
+            )
 
     def _events(self, request):
         general = _load_general()
@@ -703,6 +773,84 @@ class RegistrationHandler(PersistentServerConnectionApplication):
                 f"{content['counts']['hints']} hints."
             )
         return response
+
+    def _admin_reset_run(self, request):
+        self._require_reset_admin(request)
+        general = _load_general()
+        values = _pairs_to_dict(request.get("form"))
+        ctf_id = values.get("ctf_id", "").strip().lower()
+        confirm = values.get("confirm_ctf_id", "").strip().lower()
+        if not ctf_id or confirm != ctf_id:
+            raise ValueError("Reset confirmation must exactly match ctf_id")
+
+        event = _event_by_id(request, general, ctf_id)
+        if not event:
+            raise ValueError("CTF event was not found")
+
+        # Preflight the KV Store reads before deleting any indexed score events.
+        registrations = _kv_query(
+            request, general, REGISTRATIONS_COLLECTION, {"ctf_id": ctf_id}, limit=0
+        )
+        hint_entitlements = _content_query(
+            request, SCOREBOARD_APP, "ctf_hint_entitlements", {"ctf_id": ctf_id}, limit=0
+        )
+
+        # Splunk's delete command marks matching events as deleted from search.
+        # It does not immediately reclaim index disk space, which is fine for
+        # resetting a reusable CTF while retaining content and the event definition.
+        for index in ("scoreboard", "scoreboard_admin"):
+            _run_export_search(
+                request,
+                f'search index={index} ctf_id="{ctf_id}" | delete',
+            )
+
+        registration_deleted = 0
+        token = _writer_token(request, general)
+        for row in registrations:
+            key = row.get("_key")
+            if not key:
+                continue
+            _urlopen_json(
+                _kv_base(request["server"]["rest_uri"], REGISTRATIONS_COLLECTION)
+                + "/"
+                + urllib.parse.quote(str(key), safe=""),
+                method="DELETE",
+                token=token,
+            )
+            registration_deleted += 1
+
+        hints_deleted = _delete_content_rows(
+            request, SCOREBOARD_APP, "ctf_hint_entitlements", hint_entitlements
+        )
+
+        try:
+            _dispatch_saved_search(
+                request, SCOREBOARD_ADMIN_APP, "Generate Latest Scores and Ranks"
+            )
+        except Exception as exc:
+            # Score events are already reset; a stale cached rank lookup is less
+            # important than failing the entire reset. The next scheduled run
+            # will rebuild currentscore.csv from the now-clean scoreboard index.
+            logger.warning("Unable to refresh currentscore.csv after reset: %s", exc)
+
+        logger.warning(
+            "CTF run reset by=%s ctf_id=%s registrations=%s hint_entitlements=%s",
+            request["session"]["user"],
+            ctf_id,
+            registration_deleted,
+            hints_deleted,
+        )
+        return {
+            "message": (
+                f"Reset {ctf_id}: score events hidden, "
+                f"{registration_deleted} registrations removed, "
+                f"{hints_deleted} hint entitlements removed. "
+                "Questions, answers, hints, and the CTF event were preserved."
+            ),
+            "ctf_id": ctf_id,
+            "registrations_deleted": registration_deleted,
+            "hint_entitlements_deleted": hints_deleted,
+        }
 
     def _admin_roster(self, request):
         general = _load_general()

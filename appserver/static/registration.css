@@ -61,3 +61,4 @@
 .ctfr-content-import h3 { margin:0 0 6px; }
 .ctfr-content-import input[type="file"] { display:block; width:100%; box-sizing:border-box; margin-top:5px; }
 .ctfr-content-import code { white-space:nowrap; }
+.ctfr-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
