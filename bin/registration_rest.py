@@ -305,7 +305,7 @@ def _replace_ctf_content(request, ctf_id, updates):
 def _verify_ctf_content(request, ctf_id, effective_content):
     actual_counts = {}
     for name, expected_rows in effective_content.items():
-        app, collection, _identity_fields = CONTENT_TARGETS[name]
+        app, collection, identity_fields = CONTENT_TARGETS[name]
         actual = _content_query(request, app, collection, {"ctf_id": ctf_id}, limit=0)
         actual_counts[name] = len(actual)
         if len(actual) != len(expected_rows):
@@ -313,6 +313,36 @@ def _verify_ctf_content(request, ctf_id, effective_content):
                 f"Content verification failed for {name}: "
                 f"expected {len(expected_rows)} row(s), found {len(actual)}"
             )
+
+        # Counts alone are not enough. Verify that every field produced by the
+        # importer survived the KV write. This catches schema/lookup changes
+        # that silently discard Subject, ChallengeID, AnswerType, or future
+        # imported metadata while still reporting the correct row count.
+        actual_by_identity = {
+            _row_identity(row, identity_fields): row
+            for row in actual
+        }
+        for expected in expected_rows:
+            identity = _row_identity(expected, identity_fields)
+            stored = actual_by_identity.get(identity)
+            if stored is None:
+                raise RuntimeError(
+                    f"Content verification failed for {name}: "
+                    f"missing row identity {identity}"
+                )
+            for field, expected_value in expected.items():
+                if field.startswith("_"):
+                    continue
+                if field not in stored:
+                    raise RuntimeError(
+                        f"Content verification failed for {name} {identity}: "
+                        f"field {field} was not stored"
+                    )
+                if str(stored.get(field, "")) != str(expected_value):
+                    raise RuntimeError(
+                        f"Content verification failed for {name} {identity}: "
+                        f"field {field} changed during storage"
+                    )
     logger.info(
         "Verified CTF content ctf_id=%s questions=%s answers=%s hints=%s",
         ctf_id,

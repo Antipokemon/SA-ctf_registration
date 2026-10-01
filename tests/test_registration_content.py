@@ -53,6 +53,18 @@ class RegistrationContentTests(unittest.TestCase):
         self.assertEqual(content["counts"], {"questions": 2, "answers": 2, "hints": 2})
         self.assertEqual(content["questions"][0]["Number"], "1")
 
+    def test_subject_and_challenge_id_are_preserved_for_scoreboard(self):
+        q = (
+            "ctf_id,Number,Question,StartTime,EndTime,BasePoints,"
+            "AdditionalBonusPoints,AdditionalBonusInstructions,Subject,ChallengeID\n"
+            f'{CTF_ID},1,"What host?",,,100,0,"",environment_familiarization,E001\n'
+            f'{CTF_ID},2,"What IP?",,,80,0,"",network_traffic,E002\n'
+        )
+        content = self.parse(questions_csv=q)
+        self.assertEqual(content["questions"][0]["Subject"], "environment_familiarization")
+        self.assertEqual(content["questions"][0]["Category"], "environment_familiarization")
+        self.assertEqual(content["questions"][0]["ChallengeID"], "E001")
+
     def test_event_window_overrides_question_times(self):
         content = self.parse()
         self.assertEqual(content["questions"][0]["StartTime"], "1791633600")
@@ -90,7 +102,7 @@ class RegistrationContentTests(unittest.TestCase):
 
     def test_missing_header_rejected(self):
         bad = "ctf_id,Number,Question\nasteron-easy-2026,1,What host?\n"
-        with self.assertRaisesRegex(ValueError, "missing required column"):
+        with self.assertRaisesRegex(ValueError, "does not match a supported format"):
             self.parse(questions_csv=bad)
 
     def test_partial_question_update_uses_existing_answers_and_hints(self):
